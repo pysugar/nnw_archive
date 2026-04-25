@@ -22,6 +22,12 @@ nnw_archive stats
 nnw_archive web --port 8765
 ```
 
+查看完整 JSON 同步结果：
+
+```bash
+nnw_archive sync --json
+```
+
 导入旧备份：
 
 ```bash
@@ -49,6 +55,12 @@ Web UI 基于 Flask，只提供只读接口：
 
 搜索支持全文搜索、feed、folder、starred、unread 和时间过滤；返回结果带
 `page`、`page_size`、`total`、`pages` 和 `items`。
+
+分页示例：
+
+```bash
+curl 'http://127.0.0.1:8765/api/search?q=agent&page=2&page_size=25'
+```
 
 ## 每日同步
 
@@ -89,3 +101,25 @@ nnw_archive uninstall-launchd
 ```
 
 所有命令支持 `-v/--verbose`，会同时把详细日志输出到 stderr。
+
+常见排查：
+
+- `NetNewsWire source database not found`：确认原生容器路径是否存在，或传
+  `--source prototypes/localtools/rss/netnewswire.sqlite3` / 旧备份路径。
+- `Source schema hash changed`：先检查 NetNewsWire 是否升级了数据库结构；确认无误后用
+  `--allow-schema-change`。
+- Feed 名称或 folder 缺失：同步不会因此失败，检查日志中 `FeedSettings.db`、OPML 或
+  plist 的 warning。
+
+## 验证
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python -m unittest tests/rss/test_nnw_archive.py
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python -m py_compile src/localtools/nnw_archive/core.py src/localtools/nnw_archive/cli.py src/localtools/nnw_archive/webapp.py
+```
+
+当前真实数据 smoke test 使用：
+
+```bash
+bin/nnw_archive sync --source prototypes/localtools/rss/netnewswire.sqlite3 --data-dir /tmp/nnw-archive-stable-smoke-20260426 --json
+```

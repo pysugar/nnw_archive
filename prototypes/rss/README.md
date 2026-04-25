@@ -1,5 +1,9 @@
 # NetNewsWire Archive Prototype
 
+> 稳定版已经迁移到 `bin/nnw_archive` 和 `src/localtools/nnw_archive/`。本目录保留为
+> prototype 来源、真实 NetNewsWire symlink 和对照验证区；日常使用请优先运行
+> `nnw_archive sync` / `nnw_archive web`。
+
 `nnw_archive.py` 是 NetNewsWire 长期历史归档原型。它只读 NetNewsWire 的原生
 SQLite 数据库，通过 SQLite backup API 取得一致快照，然后把文章、状态、作者和
 feed 元数据合并到独立历史库。
@@ -17,6 +21,16 @@ prototypes/localtools/rss/netnewswire.sqlite3
 ```
 
 ## Commands
+
+稳定版：
+
+```bash
+nnw_archive sync
+nnw_archive stats
+nnw_archive web --port 8765
+```
+
+Prototype 直接执行仍可用于对照：
 
 首次同步：
 
