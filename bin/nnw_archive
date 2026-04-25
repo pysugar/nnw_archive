@@ -1,0 +1,3 @@
+#!/bin/bash
+source "$(cd "$(dirname "$0")" && pwd -P)/pyrunner.sh"
+pyrun src/localtools/nnw_archive/cli.py "$@"

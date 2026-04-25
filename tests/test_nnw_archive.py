@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
-import io
 import json
 import sqlite3
 import sys
@@ -9,15 +7,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from click.testing import CliRunner
+
 
 ROOT = Path(__file__).resolve().parents[2]
-MODULE_PATH = ROOT / "prototypes" / "localtools" / "rss" / "nnw_archive.py"
-SPEC = importlib.util.spec_from_file_location("nnw_archive", MODULE_PATH)
-assert SPEC is not None
-assert SPEC.loader is not None
-nnw_archive = importlib.util.module_from_spec(SPEC)
-sys.modules[SPEC.name] = nnw_archive
-SPEC.loader.exec_module(nnw_archive)
+LOCALTOOLS_ROOT = ROOT / "src" / "localtools"
+if str(LOCALTOOLS_ROOT) not in sys.path:
+    sys.path.insert(0, str(LOCALTOOLS_ROOT))
+
+from nnw_archive import cli as nnw_cli
+from nnw_archive import core as nnw_archive
+from nnw_archive.webapp import create_app
 
 
 SOURCE_SCHEMA = """
@@ -202,29 +202,6 @@ class NetNewsWireArchiveTests(unittest.TestCase):
             now=now,
         )
 
-    def request_handler(self, archive: Path, path: str, method: str = "GET"):
-        handler_class = nnw_archive.make_handler(archive)
-        handler = object.__new__(handler_class)
-        handler.path = path
-        handler.wfile = io.BytesIO()
-        response: dict[str, object] = {"headers": []}
-
-        def send_response(status: int) -> None:
-            response["status"] = status
-
-        def send_header(name: str, value: str) -> None:
-            response["headers"].append((name, value))
-
-        handler.send_response = send_response
-        handler.send_header = send_header
-        handler.end_headers = lambda: None
-        if method == "POST":
-            handler.do_POST()
-        else:
-            handler.do_GET()
-        response["body"] = handler.wfile.getvalue()
-        return response
-
     def test_sync_inserts_articles_statuses_authors_and_feed_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             source, archive, feed_settings, opml = self.make_fixture(tmpdir)
@@ -328,18 +305,47 @@ class NetNewsWireArchiveTests(unittest.TestCase):
             results = nnw_archive.search_articles(archive, q="archive history")
             self.assertEqual([row["articleID"] for row in results], ["article-1"])
 
-            stats_response = self.request_handler(archive, "/api/stats")
-            self.assertEqual(stats_response["status"], 200)
-            stats = json.loads(stats_response["body"].decode("utf-8"))
+            app = create_app(archive)
+            client = app.test_client()
+
+            stats_response = client.get("/api/stats")
+            self.assertEqual(stats_response.status_code, 200)
+            stats = stats_response.get_json()
             self.assertEqual(stats["articles"], 1)
 
-            search_response = self.request_handler(archive, "/api/search?q=history")
-            self.assertEqual(search_response["status"], 200)
-            data = json.loads(search_response["body"].decode("utf-8"))
-            self.assertEqual(data[0]["articleID"], "article-1")
+            search_response = client.get("/api/search?q=history&page=1&page_size=10")
+            self.assertEqual(search_response.status_code, 200)
+            data = search_response.get_json()
+            self.assertEqual(data["page"], 1)
+            self.assertEqual(data["page_size"], 10)
+            self.assertEqual(data["total"], 1)
+            self.assertEqual(data["items"][0]["articleID"], "article-1")
 
-            post_response = self.request_handler(archive, "/api/search", method="POST")
-            self.assertEqual(post_response["status"], 405)
+            post_response = client.post("/api/search")
+            self.assertEqual(post_response.status_code, 405)
+
+    def test_click_stats_and_default_source_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            source, archive, feed_settings, opml = self.make_fixture(tmpdir)
+            fallback = root / "netnewswire.sqlite3"
+            source.rename(fallback)
+
+            resolved = nnw_archive.resolve_source_db(
+                cwd=root, preferred_source=root / "missing-native.sqlite3"
+            )
+            self.assertEqual(resolved, fallback.resolve())
+
+            self.sync(fallback, archive, feed_settings, opml, "2026-01-01T00:00:00Z")
+
+            runner = CliRunner()
+            result = runner.invoke(
+                nnw_cli.cli,
+                ["stats", "--archive-db", str(archive), "--data-dir", str(root), "--json"],
+            )
+            self.assertEqual(result.exit_code, 0, msg=result.output)
+            payload = json.loads(result.output)
+            self.assertEqual(payload["articles"], 1)
 
 
 if __name__ == "__main__":
