@@ -165,8 +165,5 @@ bin/nnw_archive sync --source prototypes/localtools/rss/netnewswire.sqlite3 --da
 
 - `core.py` 仍保留从 prototype 复制来的旧 argparse/http.server 辅助代码；稳定入口已经走
   `cli.py` + `webapp.py`。后续可做一次无行为变化的清理。
-- 全量 unittest discovery 当前还有既有失败：`chatgpt_export` 与新版
-  `html-to-markdown` API 的兼容问题，以及 `yaml2json` 测试环境缺 `PyYAML`。这些不是
-  `nnw_archive` 专项失败。
-- 当前机器缺少 `shellcheck` / `shfmt` 时，完整 `scripts/healthz/check_localtools.sh`
-  无法跑完；`bin/nnw_archive` 已加入健康检查的 shell 文件列表。
+- 全量 unittest discovery 需要按当前 `src/localtools` 布局处理；`bin/nnw_archive`
+  已加入健康检查的 shell 文件列表。
