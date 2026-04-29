@@ -1,6 +1,6 @@
 # nnw_archive 项目上下文
 
-> 最后更新：2026-04-26  
+> 最后更新：2026-04-30
 > 稳定命令：`/opt/local/bin/nnw_archive`  
 > 源码：`/opt/local/src/localtools/nnw_archive/`  
 > 原型保留：`/opt/local/prototypes/localtools/rss/`
@@ -77,7 +77,12 @@ Prototype `prototypes/localtools/rss/nnw_archive.py` 先保留作为来源和对
 
 - 只读打开 NetNewsWire 源库，并用 `sqlite3.Connection.backup()` 生成一致性临时快照。
 - 历史库通过 `connect_archive()` 打开，启用 WAL、foreign_keys、busy_timeout。
-- 首次同步记录源库核心 schema hash；后续 hash 变化时默认中止，除非传 `--allow-schema-change`。
+- 首次同步记录源库核心 schema hash 和 schema payload；后续 hash 变化时默认中止，
+  除非传 `--allow-schema-change`。
+- schema 变化错误会输出旧/新 hash、变化级别和 unified diff。变化级别：
+  `core table definitions changed` 表示核心 `CREATE TABLE` 定义变化；
+  `auxiliary schema objects changed` 表示仅 index、trigger 或 view 等外围对象变化；
+  `previous schema payload unavailable` 表示旧归档库还没有历史 payload，无法 diff。
 - 每次同步全量读取当前快照，但只对 hash 变化的文章、状态、作者、feed 元数据写入。
 - `read`、`starred`、`dateArrived` 使用最新 NetNewsWire 状态覆盖。
 - 源库文章消失时不删除历史库记录，只设置 `archive_article_meta.source_deleted_at`。
@@ -95,8 +100,9 @@ Prototype `prototypes/localtools/rss/nnw_archive.py` 先保留作为来源和对
 
 归档 sidecar 表：
 
-- `archive_metadata` — schema version 和源 schema hash
+- `archive_metadata` — archive schema version、当前源 schema hash 和当前 schema payload
 - `archive_runs` — 每次同步统计、错误、源路径、schema hash
+- `archive_source_schemas` — 按 hash 保存已接受过的源 schema payload、first/last seen 时间
 - `archive_article_meta` — `created_at`、`updated_at`、`last_seen_at`、`source_deleted_at`、内容/状态 hash
 - `archive_feeds` — 当前合并后的 feed 元数据
 - `archive_feed_snapshots` — 每次同步的 feed 元数据快照
@@ -145,6 +151,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python -m unittest tests/rss/test
 当前覆盖：
 
 - 首次同步插入文章、状态、作者、feed 元数据
+- 源 schema payload 记录、schema hash 变化 diff、`--allow-schema-change` 接受路径
 - 同步幂等和 `last_seen_at`
 - 最新状态覆盖
 - 源库删除文章后历史保留并标记

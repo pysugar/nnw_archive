@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import difflib
 import hashlib
 import html
 import html.parser
@@ -40,7 +41,7 @@ NATIVE_SOURCE_DB = Path(
 FALLBACK_SOURCE_DB_NAME = "netnewswire.sqlite3"
 DEFAULT_SOURCE_DB = NATIVE_SOURCE_DB
 DEFAULT_LABEL = "local.netnewswire-archive.sync"
-ARCHIVE_SCHEMA_VERSION = "1"
+ARCHIVE_SCHEMA_VERSION = "2"
 LOG_FORMAT = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
 
 logger = logging.getLogger(TOOL_NAME)
@@ -296,6 +297,13 @@ def ensure_archive_schema(conn: sqlite3.Connection) -> None:
             error TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS archive_source_schemas (
+            schema_hash TEXT NOT NULL PRIMARY KEY,
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL,
+            payload TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS archive_article_meta (
             articleID TEXT NOT NULL PRIMARY KEY,
             created_at TEXT NOT NULL,
@@ -387,7 +395,7 @@ def validate_source_schema(conn: sqlite3.Connection) -> None:
             raise RuntimeError(f"Source table {table} is missing columns: {joined}")
 
 
-def source_schema_hash(conn: sqlite3.Connection) -> str:
+def source_schema_payload(conn: sqlite3.Connection) -> str:
     table_names = tuple(REQUIRED_SOURCE_COLUMNS)
     placeholders = ",".join("?" for _ in table_names)
     rows = conn.execute(
@@ -403,7 +411,15 @@ def source_schema_hash(conn: sqlite3.Connection) -> str:
     payload = "\n".join(
         f"{row['type']}|{row['name']}|{row['tbl_name']}|{row['sql']}" for row in rows
     )
+    return payload
+
+
+def schema_payload_hash(payload: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def source_schema_hash(conn: sqlite3.Connection) -> str:
+    return schema_payload_hash(source_schema_payload(conn))
 
 
 def get_metadata(conn: sqlite3.Connection, key: str) -> str | None:
@@ -422,6 +438,120 @@ def set_metadata(conn: sqlite3.Connection, key: str, value: str) -> None:
         """,
         (key, value),
     )
+
+
+def get_source_schema_payload(conn: sqlite3.Connection, schema_hash: str) -> str | None:
+    row = conn.execute(
+        "SELECT payload FROM archive_source_schemas WHERE schema_hash = ?",
+        (schema_hash,),
+    ).fetchone()
+    if row is not None:
+        return str(row["payload"])
+    if get_metadata(conn, "source_schema_hash") == schema_hash:
+        return get_metadata(conn, "source_schema_payload")
+    return None
+
+
+def record_source_schema(
+    conn: sqlite3.Connection, *, schema_hash: str, payload: str, now: str
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO archive_source_schemas(schema_hash, first_seen_at, last_seen_at, payload)
+        VALUES(?, ?, ?, ?)
+        ON CONFLICT(schema_hash) DO UPDATE SET
+            last_seen_at = excluded.last_seen_at,
+            payload = excluded.payload
+        """,
+        (schema_hash, now, now, payload),
+    )
+    set_metadata(conn, "source_schema_hash", schema_hash)
+    set_metadata(conn, "source_schema_payload", payload)
+
+
+def schema_payload_entries(payload: str) -> list[str]:
+    entries: list[str] = []
+    current: list[str] = []
+    entry_prefixes = ("table|", "index|", "trigger|", "view|")
+
+    for line in payload.splitlines():
+        if line.startswith(entry_prefixes) and line.count("|") >= 3:
+            if current:
+                entries.append("\n".join(current))
+            current = [line]
+            continue
+        if current:
+            current.append(line)
+        elif line:
+            current = [line]
+
+    if current:
+        entries.append("\n".join(current))
+    return entries
+
+
+def classify_schema_change(previous_payload: str | None, current_payload: str) -> str:
+    if previous_payload is None:
+        return "previous schema payload unavailable"
+
+    changed_entries = set(schema_payload_entries(previous_payload)) ^ set(
+        schema_payload_entries(current_payload)
+    )
+    for table in REQUIRED_SOURCE_COLUMNS:
+        prefix = f"table|{table}|{table}|"
+        if any(entry.startswith(prefix) for entry in changed_entries):
+            return "core table definitions changed"
+
+    if changed_entries:
+        return "auxiliary schema objects changed"
+    return "schema payload ordering or formatting changed"
+
+
+def schema_payload_diff(
+    previous_payload: str, current_payload: str, *, max_lines: int = 80
+) -> str:
+    diff_lines = list(
+        difflib.unified_diff(
+            previous_payload.splitlines(),
+            current_payload.splitlines(),
+            fromfile="previous-source-schema",
+            tofile="current-source-schema",
+            lineterm="",
+        )
+    )
+    if len(diff_lines) > max_lines:
+        omitted = len(diff_lines) - max_lines
+        diff_lines = diff_lines[:max_lines] + [
+            f"... diff truncated, {omitted} more lines"
+        ]
+    return "\n".join(diff_lines)
+
+
+def source_schema_change_message(
+    *,
+    previous_hash: str,
+    current_hash: str,
+    previous_payload: str | None,
+    current_payload: str,
+) -> str:
+    category = classify_schema_change(previous_payload, current_payload)
+    lines = [
+        "Source schema hash changed.",
+        f"Previous schema hash: {previous_hash}",
+        f"Current schema hash:  {current_hash}",
+        f"Schema change category: {category}",
+        "Re-run with --allow-schema-change after reviewing the NetNewsWire schema.",
+    ]
+    if previous_payload is None:
+        lines.append(
+            "Previous schema payload is unavailable, so no schema diff can be shown."
+        )
+        return "\n".join(lines)
+
+    diff = schema_payload_diff(previous_payload, current_payload)
+    if diff:
+        lines.extend(["Schema diff:", diff])
+    return "\n".join(lines)
 
 
 def normalize_value(value: Any) -> Any:
@@ -858,15 +988,36 @@ def finish_run(conn: sqlite3.Connection, result: SyncResult, *, now: str, error:
 
 
 def enforce_schema_hash(
-    conn: sqlite3.Connection, schema_hash: str, *, allow_schema_change: bool
+    conn: sqlite3.Connection,
+    schema_hash: str,
+    schema_payload: str,
+    *,
+    allow_schema_change: bool,
+    now: str,
 ) -> None:
     previous_hash = get_metadata(conn, "source_schema_hash")
-    if previous_hash and previous_hash != schema_hash and not allow_schema_change:
-        raise RuntimeError(
-            "Source schema hash changed. Re-run with --allow-schema-change after "
-            "reviewing the NetNewsWire schema."
+    previous_payload = (
+        get_source_schema_payload(conn, previous_hash) if previous_hash else None
+    )
+    if previous_hash and previous_hash != schema_hash:
+        if not allow_schema_change:
+            raise RuntimeError(
+                source_schema_change_message(
+                    previous_hash=previous_hash,
+                    current_hash=schema_hash,
+                    previous_payload=previous_payload,
+                    current_payload=schema_payload,
+                )
+            )
+        logger.warning(
+            "Accepted source schema hash change: %s -> %s (%s)",
+            previous_hash,
+            schema_hash,
+            classify_schema_change(previous_payload, schema_payload),
         )
-    set_metadata(conn, "source_schema_hash", schema_hash)
+    record_source_schema(
+        conn, schema_hash=schema_hash, payload=schema_payload, now=now
+    )
 
 
 def sync_archive(
@@ -906,9 +1057,14 @@ def sync_archive(
     with sqlite_snapshot(resolved_source_db, label="articles") as source:
         try:
             validate_source_schema(source)
-            schema_hash = source_schema_hash(source)
+            schema_payload = source_schema_payload(source)
+            schema_hash = schema_payload_hash(schema_payload)
             enforce_schema_hash(
-                archive, schema_hash, allow_schema_change=allow_schema_change
+                archive,
+                schema_hash,
+                schema_payload,
+                allow_schema_change=allow_schema_change,
+                now=now,
             )
         except Exception:
             logger.exception("Failed to validate NetNewsWire source schema")

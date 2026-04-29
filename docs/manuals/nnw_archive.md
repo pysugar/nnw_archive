@@ -40,6 +40,16 @@ nnw_archive sync --source /path/to/old/DB.sqlite3
 nnw_archive sync --allow-schema-change
 ```
 
+同步中止时，错误信息会列出旧/新 schema hash、变化级别，并在已有历史 payload
+时输出 unified diff。变化级别分为：
+
+- `core table definitions changed`：`articles`、`statuses`、`authors` 或
+  `authorsLookup` 的 `CREATE TABLE` 定义变化，需要重点确认字段语义。
+- `auxiliary schema objects changed`：核心表定义未变，只是相关 index、trigger 或 view
+  变化，通常风险较低。
+- `previous schema payload unavailable`：旧归档库还没有保存 schema payload，无法自动
+  diff；确认后运行一次 `--allow-schema-change`，后续变化会有 diff。
+
 ## Web UI
 
 ```bash
@@ -86,6 +96,8 @@ nnw_archive uninstall-launchd
 
 - 原生镜像表：`articles`、`statuses`、`authors`、`authorsLookup`。
 - 归档 sidecar 表统一使用 `archive_` 前缀。
+- `archive_source_schemas` 按 hash 保存已接受过的 NetNewsWire 源库 schema payload，
+  用于后续 schema 变化 diff。
 - `created_at` 表示文章第一次进入归档库的 UTC 时间。
 - `updated_at` 在文章内容或 read/starred/dateArrived 状态变化时更新。
 - `last_seen_at` 每次源库仍存在该文章时更新。
@@ -106,8 +118,9 @@ nnw_archive uninstall-launchd
 
 - `NetNewsWire source database not found`：确认原生容器路径是否存在，或传
   `--source prototypes/localtools/rss/netnewswire.sqlite3` / 旧备份路径。
-- `Source schema hash changed`：先检查 NetNewsWire 是否升级了数据库结构；确认无误后用
-  `--allow-schema-change`。
+- `Source schema hash changed`：阅读错误里的变化级别和 schema diff。核心表定义变化
+  要重点确认；仅 index/trigger/view 变化通常可接受。确认无误后用
+  `--allow-schema-change` 记录新 schema。
 - Feed 名称或 folder 缺失：同步不会因此失败，检查日志中 `FeedSettings.db`、OPML 或
   plist 的 warning。
 

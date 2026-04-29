@@ -192,20 +192,36 @@ class NetNewsWireArchiveTests(unittest.TestCase):
         create_opml(opml)
         return source, archive, feed_settings, opml
 
-    def sync(self, source: Path, archive: Path, feed_settings: Path, opml: Path, now: str):
+    def sync(
+        self,
+        source: Path,
+        archive: Path,
+        feed_settings: Path,
+        opml: Path,
+        now: str,
+        *,
+        allow_schema_change: bool = False,
+    ):
         return nnw_archive.sync_archive(
             source_db=source,
             archive_db=archive,
             feed_settings_db=feed_settings,
             opml_path=opml,
             feed_metadata_path=Path("/missing.plist"),
+            allow_schema_change=allow_schema_change,
             now=now,
         )
 
     def test_sync_inserts_articles_statuses_authors_and_feed_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             source, archive, feed_settings, opml = self.make_fixture(tmpdir)
-            result = self.sync(source, archive, feed_settings, opml, "2026-01-01T00:00:00Z")
+            result = self.sync(
+                source,
+                archive,
+                feed_settings,
+                opml,
+                "2026-01-01T00:00:00Z",
+            )
 
             self.assertEqual(result.articles_inserted, 1)
             self.assertEqual(result.statuses_updated, 1)
@@ -223,6 +239,114 @@ class NetNewsWireArchiveTests(unittest.TestCase):
                 self.assertEqual(feed["feedURL"], "https://example.com/feed.xml")
             finally:
                 conn.close()
+
+    def test_sync_records_source_schema_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, feed_settings, opml = self.make_fixture(tmpdir)
+            result = self.sync(
+                source,
+                archive,
+                feed_settings,
+                opml,
+                "2026-01-01T00:00:00Z",
+            )
+
+            conn = sqlite3.connect(archive)
+            conn.row_factory = sqlite3.Row
+            try:
+                metadata_payload = conn.execute(
+                    "SELECT value FROM archive_metadata WHERE key = 'source_schema_payload'"
+                ).fetchone()["value"]
+                schema = conn.execute(
+                    "SELECT * FROM archive_source_schemas WHERE schema_hash = ?",
+                    (result.source_schema_hash,),
+                ).fetchone()
+
+                self.assertIn(
+                    "table|articles|articles|CREATE TABLE articles",
+                    metadata_payload,
+                )
+                self.assertEqual(schema["payload"], metadata_payload)
+                self.assertEqual(schema["first_seen_at"], "2026-01-01T00:00:00Z")
+                self.assertEqual(schema["last_seen_at"], "2026-01-01T00:00:00Z")
+            finally:
+                conn.close()
+
+    def test_schema_hash_change_reports_diff_and_requires_allow(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, feed_settings, opml = self.make_fixture(tmpdir)
+            first = self.sync(
+                source,
+                archive,
+                feed_settings,
+                opml,
+                "2026-01-01T00:00:00Z",
+            )
+
+            conn = sqlite3.connect(source)
+            try:
+                conn.execute("CREATE INDEX articles_title_idx ON articles(title)")
+                conn.commit()
+            finally:
+                conn.close()
+
+            with self.assertRaises(RuntimeError) as ctx:
+                self.sync(source, archive, feed_settings, opml, "2026-01-02T00:00:00Z")
+
+            message = str(ctx.exception)
+            self.assertIn("Source schema hash changed.", message)
+            self.assertIn(f"Previous schema hash: {first.source_schema_hash}", message)
+            self.assertIn("Schema change category: auxiliary schema objects changed", message)
+            self.assertIn("+index|articles_title_idx|articles|CREATE INDEX", message)
+
+            accepted = self.sync(
+                source,
+                archive,
+                feed_settings,
+                opml,
+                "2026-01-02T00:00:00Z",
+                allow_schema_change=True,
+            )
+            self.assertNotEqual(accepted.source_schema_hash, first.source_schema_hash)
+
+            conn = sqlite3.connect(archive)
+            try:
+                current_hash = conn.execute(
+                    "SELECT value FROM archive_metadata WHERE key = 'source_schema_hash'"
+                ).fetchone()[0]
+                schema_count = conn.execute(
+                    "SELECT COUNT(*) FROM archive_source_schemas"
+                ).fetchone()[0]
+                self.assertEqual(current_hash, accepted.source_schema_hash)
+                self.assertEqual(schema_count, 2)
+            finally:
+                conn.close()
+
+    def test_schema_hash_change_classifies_core_table_definition_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, feed_settings, opml = self.make_fixture(tmpdir)
+            self.sync(
+                source,
+                archive,
+                feed_settings,
+                opml,
+                "2026-01-01T00:00:00Z",
+            )
+
+            conn = sqlite3.connect(source)
+            try:
+                conn.execute("ALTER TABLE articles ADD COLUMN readingTime INTEGER")
+                conn.commit()
+            finally:
+                conn.close()
+
+            with self.assertRaises(RuntimeError) as ctx:
+                self.sync(source, archive, feed_settings, opml, "2026-01-02T00:00:00Z")
+
+            self.assertIn(
+                "Schema change category: core table definitions changed",
+                str(ctx.exception),
+            )
 
     def test_sync_is_idempotent_but_keeps_seen_timestamp_current(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
