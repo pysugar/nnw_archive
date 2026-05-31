@@ -84,6 +84,7 @@ Prototype `prototypes/localtools/rss/nnw_archive.py` 先保留作为来源和对
   `auxiliary schema objects changed` 表示仅 index、trigger 或 view 等外围对象变化；
   `previous schema payload unavailable` 表示旧归档库还没有历史 payload，无法 diff。
 - 每次同步全量读取当前快照，但只对 hash 变化的文章、状态、作者、feed 元数据写入。
+  作者来源兼容旧版 `authors` / `authorsLookup` 表和新版 `articles.authors` JSON 字段。
 - `read`、`starred`、`dateArrived` 使用最新 NetNewsWire 状态覆盖。
 - 源库文章消失时不删除历史库记录，只设置 `archive_article_meta.source_deleted_at`。
 - Feed 元数据由 `FeedSettings.db`、`Subscriptions.opml`、`FeedMetadata.plist` 合并，缺失或解析失败只记 warning，不阻断文章同步。
@@ -91,12 +92,12 @@ Prototype `prototypes/localtools/rss/nnw_archive.py` 先保留作为来源和对
 
 ## 4. 数据模型
 
-原生镜像表：
+归档库中的原生镜像表：
 
 - `articles`
 - `statuses`
-- `authors`
-- `authorsLookup`
+- `authors` — 源库旧版作者表或新版 `articles.authors` JSON 标准化后的作者记录
+- `authorsLookup` — 源库旧版作者关联表或新版 JSON 派生出的文章-作者关联
 
 归档 sidecar 表：
 
@@ -151,6 +152,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python -m unittest tests/rss/test
 当前覆盖：
 
 - 首次同步插入文章、状态、作者、feed 元数据
+- 新版 NetNewsWire `articles.authors` JSON 作者兼容，以及无作者/坏 JSON 的容错路径
 - 源 schema payload 记录、schema hash 变化 diff、`--allow-schema-change` 接受路径
 - 同步幂等和 `last_seen_at`
 - 最新状态覆盖

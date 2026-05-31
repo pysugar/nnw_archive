@@ -59,6 +59,34 @@ CREATE TABLE authorsLookup (
 """
 
 
+MODERN_SOURCE_SCHEMA = """
+CREATE TABLE articles (
+    articleID TEXT NOT NULL PRIMARY KEY,
+    feedID TEXT NOT NULL,
+    uniqueID TEXT NOT NULL,
+    title TEXT,
+    contentHTML TEXT,
+    contentText TEXT,
+    markdown TEXT,
+    url TEXT,
+    externalURL TEXT,
+    summary TEXT,
+    imageURL TEXT,
+    bannerImageURL TEXT,
+    datePublished DATE,
+    dateModified DATE,
+    searchRowID INTEGER,
+    authors TEXT
+);
+CREATE TABLE statuses (
+    articleID TEXT NOT NULL PRIMARY KEY,
+    read BOOL NOT NULL DEFAULT 0,
+    starred BOOL NOT NULL DEFAULT 0,
+    dateArrived DATE NOT NULL DEFAULT 0
+);
+"""
+
+
 FEED_SETTINGS_SCHEMA = """
 CREATE TABLE feedSettings (
     feedURL TEXT PRIMARY KEY,
@@ -134,6 +162,47 @@ def create_source_db(path: Path) -> None:
         conn.close()
 
 
+def create_modern_source_db(path: Path, authors: str | None) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(MODERN_SOURCE_SCHEMA)
+        conn.execute(
+            """
+            INSERT INTO articles(
+                articleID, feedID, uniqueID, title, contentHTML, contentText,
+                markdown, url, externalURL, summary, imageURL, bannerImageURL,
+                datePublished, dateModified, searchRowID, authors
+            )
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "article-1",
+                "feed-1",
+                "unique-1",
+                "Deep Search",
+                "<p>Hello archive history</p>",
+                None,
+                None,
+                "https://example.com/post",
+                None,
+                "A summary",
+                None,
+                None,
+                1_700_000_000,
+                None,
+                7,
+                authors,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO statuses(articleID, read, starred, dateArrived) VALUES(?, ?, ?, ?)",
+            ("article-1", 0, 0, 1_700_000_100.0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def create_feed_settings_db(path: Path) -> None:
     conn = sqlite3.connect(path)
     try:
@@ -192,6 +261,17 @@ class NetNewsWireArchiveTests(unittest.TestCase):
         create_opml(opml)
         return source, archive, feed_settings, opml
 
+    def make_modern_fixture(self, tmpdir: str, authors: str | None):
+        root = Path(tmpdir)
+        source = root / "DB.sqlite3"
+        archive = root / "archive.sqlite3"
+        feed_settings = root / "FeedSettings.db"
+        opml = root / "Subscriptions.opml"
+        create_modern_source_db(source, authors)
+        create_feed_settings_db(feed_settings)
+        create_opml(opml)
+        return source, archive, feed_settings, opml
+
     def sync(
         self,
         source: Path,
@@ -237,6 +317,86 @@ class NetNewsWireArchiveTests(unittest.TestCase):
                 self.assertEqual(feed["display_name"], "Edited Feed")
                 self.assertEqual(feed["folder_path"], "Tech")
                 self.assertEqual(feed["feedURL"], "https://example.com/feed.xml")
+            finally:
+                conn.close()
+
+    def test_sync_reads_modern_article_authors_json(self) -> None:
+        authors = json.dumps(
+            [
+                {
+                    "authorID": "author-1",
+                    "name": "Ada",
+                    "url": "https://example.com/ada",
+                    "avatarURL": "https://example.com/ada.png",
+                },
+                {
+                    "name": "Grace",
+                    "url": "https://example.com/grace",
+                },
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, feed_settings, opml = self.make_modern_fixture(tmpdir, authors)
+            result = self.sync(
+                source,
+                archive,
+                feed_settings,
+                opml,
+                "2026-01-01T00:00:00Z",
+            )
+
+            self.assertEqual(result.articles_inserted, 1)
+            self.assertEqual(result.authors_upserted, 2)
+            self.assertEqual(result.author_links_upserted, 2)
+
+            conn = sqlite3.connect(archive)
+            conn.row_factory = sqlite3.Row
+            try:
+                rows = conn.execute("SELECT * FROM authors ORDER BY name").fetchall()
+                self.assertEqual([row["name"] for row in rows], ["Ada", "Grace"])
+                self.assertIsNone(rows[0]["emailAddress"])
+                self.assertTrue(rows[1]["authorID"].startswith("generated:"))
+                links = conn.execute("SELECT COUNT(*) FROM authorsLookup").fetchone()[0]
+                self.assertEqual(links, 2)
+            finally:
+                conn.close()
+
+    def test_sync_allows_modern_source_without_author_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, feed_settings, opml = self.make_modern_fixture(tmpdir, None)
+            result = self.sync(
+                source,
+                archive,
+                feed_settings,
+                opml,
+                "2026-01-01T00:00:00Z",
+            )
+
+            self.assertEqual(result.articles_inserted, 1)
+            self.assertEqual(result.authors_seen, 0)
+            self.assertEqual(result.author_links_seen, 0)
+
+    def test_sync_skips_invalid_modern_article_authors_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, feed_settings, opml = self.make_modern_fixture(
+                tmpdir, "[not valid json"
+            )
+            result = self.sync(
+                source,
+                archive,
+                feed_settings,
+                opml,
+                "2026-01-01T00:00:00Z",
+            )
+
+            self.assertEqual(result.articles_inserted, 1)
+            self.assertEqual(result.authors_seen, 0)
+            self.assertEqual(result.author_links_seen, 0)
+
+            conn = sqlite3.connect(archive)
+            try:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 1)
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM authors").fetchone()[0], 0)
             finally:
                 conn.close()
 

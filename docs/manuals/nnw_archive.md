@@ -43,8 +43,8 @@ nnw_archive sync --allow-schema-change
 同步中止时，错误信息会列出旧/新 schema hash、变化级别，并在已有历史 payload
 时输出 unified diff。变化级别分为：
 
-- `core table definitions changed`：`articles`、`statuses`、`authors` 或
-  `authorsLookup` 的 `CREATE TABLE` 定义变化，需要重点确认字段语义。
+- `core table definitions changed`：`articles`、`statuses`，以及源库中仍存在的旧版
+  `authors` / `authorsLookup` 的 `CREATE TABLE` 定义变化，需要重点确认字段语义。
 - `auxiliary schema objects changed`：核心表定义未变，只是相关 index、trigger 或 view
   变化，通常风险较低。
 - `previous schema payload unavailable`：旧归档库还没有保存 schema payload，无法自动
@@ -94,7 +94,9 @@ nnw_archive uninstall-launchd
 
 ## 数据语义
 
-- 原生镜像表：`articles`、`statuses`、`authors`、`authorsLookup`。
+- 归档库保留原生镜像表：`articles`、`statuses`、`authors`、`authorsLookup`。
+  新版 NetNewsWire 源库可能不再有 `authors` / `authorsLookup` 表；同步会从
+  `articles.authors` JSON 字段标准化出作者和文章-作者关联。
 - 归档 sidecar 表统一使用 `archive_` 前缀。
 - `archive_source_schemas` 按 hash 保存已接受过的 NetNewsWire 源库 schema payload，
   用于后续 schema 变化 diff。

@@ -72,9 +72,12 @@ AUTHOR_LOOKUP_COLUMNS = ["authorID", "articleID"]
 REQUIRED_SOURCE_COLUMNS = {
     "articles": set(ARTICLE_COLUMNS),
     "statuses": set(STATUS_COLUMNS),
+}
+OPTIONAL_SOURCE_COLUMNS = {
     "authors": set(AUTHOR_COLUMNS),
     "authorsLookup": set(AUTHOR_LOOKUP_COLUMNS),
 }
+SOURCE_SCHEMA_TABLES = tuple(REQUIRED_SOURCE_COLUMNS | OPTIONAL_SOURCE_COLUMNS)
 
 
 @dataclass
@@ -394,9 +397,37 @@ def validate_source_schema(conn: sqlite3.Connection) -> None:
             joined = ", ".join(missing)
             raise RuntimeError(f"Source table {table} is missing columns: {joined}")
 
+    for table, required_columns in OPTIONAL_SOURCE_COLUMNS.items():
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        if not rows:
+            continue
+        present_columns = {row["name"] for row in rows}
+        missing = sorted(required_columns - present_columns)
+        if missing:
+            joined = ", ".join(missing)
+            raise RuntimeError(f"Source table {table} is missing columns: {joined}")
+
+
+def table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def table_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def source_schema_table_names(conn: sqlite3.Connection) -> tuple[str, ...]:
+    table_names = list(REQUIRED_SOURCE_COLUMNS)
+    table_names.extend(table for table in OPTIONAL_SOURCE_COLUMNS if table_exists(conn, table))
+    return tuple(table_names)
+
 
 def source_schema_payload(conn: sqlite3.Connection) -> str:
-    table_names = tuple(REQUIRED_SOURCE_COLUMNS)
+    table_names = source_schema_table_names(conn)
     placeholders = ",".join("?" for _ in table_names)
     rows = conn.execute(
         f"""
@@ -497,7 +528,7 @@ def classify_schema_change(previous_payload: str | None, current_payload: str) -
     changed_entries = set(schema_payload_entries(previous_payload)) ^ set(
         schema_payload_entries(current_payload)
     )
-    for table in REQUIRED_SOURCE_COLUMNS:
+    for table in SOURCE_SCHEMA_TABLES:
         prefix = f"table|{table}|{table}|"
         if any(entry.startswith(prefix) for entry in changed_entries):
             return "core table definitions changed"
@@ -583,6 +614,91 @@ def datetime_to_timestamp(value: Any) -> Any:
 
 def row_to_dict(row: sqlite3.Row, columns: list[str]) -> dict[str, Any]:
     return {column: row[column] for column in columns}
+
+
+def generated_author_id(author: dict[str, Any], article_id: str, index: int) -> str:
+    basis = {
+        "name": author.get("name"),
+        "url": author.get("url"),
+        "avatarURL": author.get("avatarURL"),
+        "emailAddress": author.get("emailAddress"),
+    }
+    if not any(basis.values()):
+        basis = {"articleID": article_id, "index": index}
+    return f"generated:{stable_hash(basis)[:32]}"
+
+
+def normalize_author(author: Any, article_id: str, index: int) -> dict[str, Any] | None:
+    if isinstance(author, str):
+        author = {"name": author}
+    if not isinstance(author, dict):
+        return None
+
+    row = {column: author.get(column) for column in AUTHOR_COLUMNS}
+    if not row["authorID"]:
+        row["authorID"] = generated_author_id(row, article_id, index)
+    return row
+
+
+def authors_from_article_json(
+    article_id: str, raw_authors: Any
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if raw_authors is None or raw_authors == "":
+        return [], []
+    try:
+        payload = json.loads(str(raw_authors))
+    except json.JSONDecodeError:
+        logger.warning("Skipping invalid authors JSON for article %s", article_id)
+        return [], []
+    if not isinstance(payload, list):
+        logger.warning("Skipping non-list authors JSON for article %s", article_id)
+        return [], []
+
+    authors: list[dict[str, Any]] = []
+    links: list[dict[str, Any]] = []
+    seen_author_ids: set[str] = set()
+    for index, raw_author in enumerate(payload):
+        author = normalize_author(raw_author, article_id, index)
+        if author is None:
+            logger.warning("Skipping invalid author entry for article %s", article_id)
+            continue
+        author_id = str(author["authorID"])
+        if author_id in seen_author_ids:
+            continue
+        seen_author_ids.add(author_id)
+        authors.append(author)
+        links.append({"authorID": author_id, "articleID": article_id})
+    return authors, links
+
+
+def read_source_authors(
+    source: sqlite3.Connection,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    if table_exists(source, "authors") and table_exists(source, "authorsLookup"):
+        authors = [
+            row_to_dict(row, AUTHOR_COLUMNS)
+            for row in source.execute(f"SELECT {', '.join(AUTHOR_COLUMNS)} FROM authors")
+        ]
+        author_links = [
+            row_to_dict(row, AUTHOR_LOOKUP_COLUMNS)
+            for row in source.execute(
+                f"SELECT {', '.join(AUTHOR_LOOKUP_COLUMNS)} FROM authorsLookup"
+            )
+        ]
+        return authors, author_links
+
+    if "authors" not in table_column_names(source, "articles"):
+        return [], []
+
+    authors_by_id: dict[str, dict[str, Any]] = {}
+    author_links: list[dict[str, Any]] = []
+    for row in source.execute("SELECT articleID, authors FROM articles"):
+        article_id = str(row["articleID"])
+        article_authors, article_links = authors_from_article_json(article_id, row["authors"])
+        for author in article_authors:
+            authors_by_id.setdefault(str(author["authorID"]), author)
+        author_links.extend(article_links)
+    return list(authors_by_id.values()), author_links
 
 
 def hash_row(row: dict[str, Any], columns: list[str]) -> str:
@@ -1099,18 +1215,7 @@ def sync_archive(
                         f"SELECT {', '.join(STATUS_COLUMNS)} FROM statuses"
                     )
                 ]
-                authors = [
-                    row_to_dict(row, AUTHOR_COLUMNS)
-                    for row in source.execute(
-                        f"SELECT {', '.join(AUTHOR_COLUMNS)} FROM authors"
-                    )
-                ]
-                author_links = [
-                    row_to_dict(row, AUTHOR_LOOKUP_COLUMNS)
-                    for row in source.execute(
-                        f"SELECT {', '.join(AUTHOR_LOOKUP_COLUMNS)} FROM authorsLookup"
-                    )
-                ]
+                authors, author_links = read_source_authors(source)
 
                 result.articles_seen = len(articles)
                 result.statuses_seen = len(statuses)
