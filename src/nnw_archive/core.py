@@ -16,6 +16,7 @@ import html
 import html.parser
 import json
 import logging
+import math
 import os
 import plistlib
 import shutil
@@ -701,6 +702,26 @@ def read_source_authors(
     return list(authors_by_id.values()), author_links
 
 
+def authoritative_author_article_ids(source: sqlite3.Connection) -> set[str]:
+    """Return articles whose current author links can safely replace old links."""
+    if table_exists(source, "authors") and table_exists(source, "authorsLookup"):
+        return {str(row[0]) for row in source.execute("SELECT articleID FROM articles")}
+    if "authors" not in table_column_names(source, "articles"):
+        return set()
+    article_ids: set[str] = set()
+    for row in source.execute("SELECT articleID, authors FROM articles"):
+        if row["authors"] in (None, ""):
+            article_ids.add(str(row["articleID"]))
+            continue
+        try:
+            payload = json.loads(row["authors"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, list) and all(isinstance(author, (str, dict)) for author in payload):
+            article_ids.add(str(row["articleID"]))
+    return article_ids
+
+
 def hash_row(row: dict[str, Any], columns: list[str]) -> str:
     return stable_hash({column: row.get(column) for column in columns})
 
@@ -836,6 +857,8 @@ def read_opml(path: Path | None, url_to_feed_id: dict[str, str]) -> dict[str, di
         tree = ET.parse(path)
         root = tree.getroot()
         body = root.find("body")
+        if body is None:
+            raise ValueError("OPML is missing its body element")
     except Exception:
         logger.warning("Failed to read OPML metadata from %s", path, exc_info=True)
         return {}
@@ -1151,6 +1174,10 @@ def sync_archive(
     resolved_source_db = resolve_source_db(source_db)
     source_account_dir = resolved_source_db.parent
     archive_db = resolve_archive_db(data_dir, archive_db)
+    if archive_db.resolve() == resolved_source_db.resolve() or (
+        archive_db.exists() and archive_db.samefile(resolved_source_db)
+    ):
+        raise ValueError("Archive database must be different from the NetNewsWire source database")
     logger.info("Starting NetNewsWire archive sync")
     logger.info("Source database: %s", resolved_source_db)
     logger.info("Archive database: %s", archive_db)
@@ -1264,6 +1291,18 @@ def sync_archive(
                     if status in {"inserted", "updated"}:
                         result.authors_upserted += 1
 
+                authoritative_ids = authoritative_author_article_ids(source)
+                current_links = {(str(link["authorID"]), str(link["articleID"])) for link in author_links}
+                stale_links = [
+                    (row["authorID"], row["articleID"])
+                    for row in archive.execute("SELECT authorID, articleID FROM authorsLookup")
+                    if str(row["articleID"]) in authoritative_ids
+                    and (str(row["authorID"]), str(row["articleID"])) not in current_links
+                ]
+                archive.executemany(
+                    "DELETE FROM authorsLookup WHERE authorID = ? AND articleID = ?", stale_links
+                )
+
                 for link in author_links:
                     before = archive.total_changes
                     archive.execute(
@@ -1369,8 +1408,7 @@ def sync_archive(
 
 
 def get_stats(archive_db: Path) -> dict[str, Any]:
-    conn = connect_archive(archive_db)
-    ensure_archive_schema(conn)
+    conn = connect_readonly(archive_db)
     try:
         last_run = conn.execute(
             """
@@ -1385,10 +1423,12 @@ def get_stats(archive_db: Path) -> dict[str, Any]:
             "articles": conn.execute("SELECT COUNT(*) AS c FROM articles").fetchone()["c"],
             "feeds": conn.execute("SELECT COUNT(*) AS c FROM archive_feeds").fetchone()["c"],
             "starred": conn.execute(
-                "SELECT COUNT(*) AS c FROM statuses WHERE starred = 1"
+                "SELECT COUNT(*) AS c FROM articles a JOIN statuses s "
+                "ON s.articleID = a.articleID WHERE s.starred = 1"
             ).fetchone()["c"],
             "unread": conn.execute(
-                "SELECT COUNT(*) AS c FROM statuses WHERE read = 0"
+                "SELECT COUNT(*) AS c FROM articles a LEFT JOIN statuses s "
+                "ON s.articleID = a.articleID WHERE COALESCE(s.read, 0) = 0"
             ).fetchone()["c"],
             "source_deleted": conn.execute(
                 """
@@ -1407,16 +1447,20 @@ def parse_date_filter(value: str | None) -> float | None:
     if not value:
         return None
     try:
-        return float(value)
+        timestamp = float(value)
     except ValueError:
         pass
-    if len(value) == 10:
-        parsed = dt.datetime.fromisoformat(value).replace(tzinfo=dt.timezone.utc)
     else:
+        if not math.isfinite(timestamp):
+            raise ValueError("Date filter must be a finite timestamp or ISO date")
+        return timestamp
+    try:
         parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=dt.timezone.utc)
-    return parsed.timestamp()
+        return parsed.timestamp()
+    except (ValueError, OverflowError) as exc:
+        raise ValueError("Date filter must be a finite timestamp or ISO date") from exc
 
 
 def bool_from_param(value: str | None) -> bool | None:
@@ -1465,11 +1509,19 @@ def search_conditions(
 
     from_ts = parse_date_filter(date_from)
     to_ts = parse_date_filter(date_to)
+    date_only_end = bool(date_to and len(date_to) == 10 and date_to[4] == "-" and date_to[7] == "-")
+    if date_only_end and to_ts is not None:
+        to_ts += 24 * 60 * 60
+    if from_ts is not None and to_ts is not None and (
+        from_ts >= to_ts if date_only_end else from_ts > to_ts
+    ):
+        raise ValueError("Start date must not be after end date")
     if from_ts is not None:
         where.append("COALESCE(a.datePublished, s.dateArrived, 0) >= ?")
         params.append(from_ts)
     if to_ts is not None:
-        where.append("COALESCE(a.datePublished, s.dateArrived, 0) <= ?")
+        operator = "<" if date_only_end else "<="
+        where.append(f"COALESCE(a.datePublished, s.dateArrived, 0) {operator} ?")
         params.append(to_ts)
 
     return where, params
@@ -1519,6 +1571,8 @@ def search_articles(
         SELECT
             a.articleID, a.feedID, a.title, a.url, a.externalURL, a.summary,
             a.imageURL, a.bannerImageURL, a.datePublished, a.dateModified,
+            SUBSTR(COALESCE(NULLIF(a.summary, ''), NULLIF(a.contentText, ''),
+                NULLIF(a.markdown, ''), a.contentHTML), 1, 1600) AS preview_source,
             s.read, s.starred, s.dateArrived,
             f.display_name AS feedTitle, f.feedURL, f.folder_path,
             m.created_at, m.updated_at, m.last_seen_at, m.source_deleted_at
@@ -1532,7 +1586,7 @@ def search_articles(
     """
     params.extend([limit, offset])
 
-    conn = connect_archive(archive_db)
+    conn = connect_readonly(archive_db)
     try:
         try:
             rows = conn.execute(sql, params).fetchall()
@@ -1545,7 +1599,10 @@ def search_articles(
                 "WHERE " + " AND ".join(fallback_where),
             )
             rows = conn.execute(fallback_sql, fallback_params).fetchall()
-        return [dict(row) for row in rows]
+        items = [dict(row) for row in rows]
+        for item in items:
+            item["excerpt"] = html_to_text(item.pop("preview_source"))[:240]
+        return items
     finally:
         conn.close()
 
@@ -1579,7 +1636,7 @@ def count_articles(
         WHERE {' AND '.join(where)}
     """
 
-    conn = connect_archive(archive_db)
+    conn = connect_readonly(archive_db)
     try:
         try:
             return int(conn.execute(sql, params).fetchone()["total"])
@@ -1611,7 +1668,6 @@ def search_articles_page(
 ) -> dict[str, Any]:
     page = max(1, page)
     page_size = max(10, min(page_size, 200))
-    offset = (page - 1) * page_size
     filters = {
         "q": q,
         "feed_id": feed_id,
@@ -1622,8 +1678,9 @@ def search_articles_page(
         "date_to": date_to,
     }
     total = count_articles(archive_db, **filters)
-    items = search_articles(archive_db, limit=page_size, offset=offset, **filters)
     pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, pages)
+    items = search_articles(archive_db, limit=page_size, offset=(page - 1) * page_size, **filters)
     return {
         "items": items,
         "page": page,
@@ -1634,7 +1691,7 @@ def search_articles_page(
 
 
 def get_article(archive_db: Path, article_id: str) -> dict[str, Any] | None:
-    conn = connect_archive(archive_db)
+    conn = connect_readonly(archive_db)
     try:
         row = conn.execute(
             """
@@ -1670,7 +1727,7 @@ def get_article(archive_db: Path, article_id: str) -> dict[str, Any] | None:
 
 
 def list_feeds(archive_db: Path) -> list[dict[str, Any]]:
-    conn = connect_archive(archive_db)
+    conn = connect_readonly(archive_db)
     try:
         rows = conn.execute(
             """

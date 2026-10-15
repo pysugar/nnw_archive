@@ -1,6 +1,6 @@
 # nnw_archive 项目上下文
 
-> 最后更新：2026-04-30
+> 最后更新：2026-10-15
 > 稳定命令：`/opt/local/bin/nnw_archive`  
 > 源码：`/opt/local/src/localtools/nnw_archive/`  
 > 原型保留：`/opt/local/prototypes/localtools/rss/`
@@ -26,9 +26,14 @@ nnw_archive uninstall-launchd
 ```text
 src/localtools/nnw_archive/
 ├── __init__.py
-├── cli.py      # click CLI，支持 bin wrapper 和直接执行 bootstrap
-├── core.py     # SQLite schema、同步、搜索、feed 元数据合并
-└── webapp.py   # Flask 只读搜索 UI 和 JSON API
+├── cli.py                  # Click entry point and LaunchAgent configuration
+├── core.py                 # Archive sync, SQLite schema and queries
+├── webapp.py               # Read-only Flask routes
+├── templates/index.html    # Application shell
+└── static/
+    ├── style.css           # Responsive library and reader layout
+    ├── app.js              # Search, selection and sanitized article documents
+    └── reader.js           # Sandboxed image fallback and reading preferences
 ```
 
 `bin/nnw_archive` 是薄 wrapper：
@@ -48,8 +53,8 @@ Prototype `prototypes/localtools/rss/nnw_archive.py` 先保留作为来源和对
 1. `~/Library/Containers/com.ranchero.NetNewsWire-Evergreen/Data/Library/Application Support/NetNewsWire/Accounts/OnMyMac/DB.sqlite3`
 2. 当前工作目录的 `netnewswire.sqlite3`
 
-可用 `--source /path/to/DB.sqlite3` 覆盖。当前本机 smoke test 使用的是
-`prototypes/localtools/rss/netnewswire.sqlite3` symlink，因为原生容器路径在当前环境不存在。
+可用 `--source /path/to/DB.sqlite3` 覆盖。2026-04 的 smoke test 使用过
+`prototypes/localtools/rss/netnewswire.sqlite3` symlink；不要据此推断当前机器的原生源库位置。
 
 默认状态目录：
 
@@ -76,6 +81,7 @@ Prototype `prototypes/localtools/rss/nnw_archive.py` 先保留作为来源和对
 核心函数：`core.sync_archive()`。
 
 - 只读打开 NetNewsWire 源库，并用 `sqlite3.Connection.backup()` 生成一致性临时快照。
+- 在初始化归档表之前拒绝源库与归档指向同一文件，包括符号链接和硬链接。
 - 历史库通过 `connect_archive()` 打开，启用 WAL、foreign_keys、busy_timeout。
 - 首次同步记录源库核心 schema hash 和 schema payload；后续 hash 变化时默认中止，
   除非传 `--allow-schema-change`。
@@ -85,6 +91,8 @@ Prototype `prototypes/localtools/rss/nnw_archive.py` 先保留作为来源和对
   `previous schema payload unavailable` 表示旧归档库还没有历史 payload，无法 diff。
 - 每次同步全量读取当前快照，但只对 hash 变化的文章、状态、作者、feed 元数据写入。
   作者来源兼容旧版 `authors` / `authorsLookup` 表和新版 `articles.authors` JSON 字段。
+- 对仍在源库中的文章清理失效的作者关联；已保留的历史文章不受影响。
+  坏 JSON / 非列表作者数据保留旧关联，有效的空作者列表则清空关联。
 - `read`、`starred`、`dateArrived` 使用最新 NetNewsWire 状态覆盖。
 - 源库文章消失时不删除历史库记录，只设置 `archive_article_meta.source_deleted_at`。
 - Feed 元数据由 `FeedSettings.db`、`Subscriptions.opml`、`FeedMetadata.plist` 合并，缺失或解析失败只记 warning，不阻断文章同步。
@@ -119,6 +127,8 @@ Prototype `prototypes/localtools/rss/nnw_archive.py` 先保留作为来源和对
 ## 5. Web/API
 
 `webapp.py` 使用 Flask，默认只绑定 `127.0.0.1:8765`。
+`stats` 和全部 Web 查询通过 SQLite `mode=ro` 打开归档，不再执行建表或 schema 写入。
+首次使用需先运行 `sync` 创建归档；`web` 不再隐式初始化空库。
 
 只读 API：
 
@@ -140,13 +150,41 @@ Prototype `prototypes/localtools/rss/nnw_archive.py` 先保留作为来源和对
 ```
 
 支持过滤：`q`、`feed_id`、`folder`、`starred`、`unread`、`from`、`to`。
+`to=YYYY-MM-DD` 包含整个 UTC 日期；时间戳或完整 ISO 时间仍按精确上限包含。
+无效日期、非有限时间戳和反向范围返回 JSON 400。越界页码收敛到实际末页。
+文章列表额外提供去除 HTML 的 `excerpt`，不返回临时截取字段。
+
+当前 UI：
+
+- 桌面固定视口两栏：列表、阅读正文独立滚动；切换文章重置正文，保留列表位置。
+- 760px 及以下显示独立列表/阅读页；返回列表保留位置。
+- 中文界面、摘要、来源/日期/状态、原文入口、文件夹/订阅源/日期筛选。
+- 未读和星标可组合；筛选、翻页清空旧文章选择，列表滚动回到顶部。
+- 请求使用 `AbortController` 与版本号，防止旧搜索/旧文章响应覆盖新选择。
+- 加载、无结果、失败重试、当前选中状态；订阅源失败不阻断搜索。
+- 深浅主题和 15–23px 正文字号保存在 localStorage；偏好变化不重置阅读进度。
+- `/` 聚焦搜索；窄屏主页面按 `Escape` 或点击返回按钮回到列表。
+
+正文与图片：
+
+- 正文先移除外层 RSS CDATA，再按 HTML 元素/属性白名单生成阅读文档。
+- 相对图片/链接基于原文章 URL 解析；支持 `data-src`、`data-original`、
+  `data-lazy-src`、`data-original-src`、`data-canonical-src` 和只有 srcset 的图片。
+- 正常图片失败后仅尝试文章已有的备用地址（最多 8 个），没有可用图片时显示提示和图片链接。
+- 机器之心已实测：`image.jiqizhixin.com` 无来源请求返回 403，保存的微信 `data-src`
+  可直接访问；不增加图片代理或改写归档数据。
+- iframe 保持 opaque origin（不允许 `allow-same-origin`），仅允许带随机 CSP nonce 的
+  自有 `reader.js` 处理图片和偏好。文章脚本、事件属性、外部样式、嵌套 iframe 被移除；
+  CSP 不允许其他脚本和动态 eval。父子窗口通信校验来源窗口，子窗口同时校验父页面 origin。
 
 ## 6. 测试和验证
 
 专项测试：
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python -m unittest tests/rss/test_nnw_archive.py
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python -m unittest tests/rss/test_nnw_archive.py
+
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python tests/rss/nnw_archive_browser_check.py --output-dir /tmp/nnw-archive-browser-check
 ```
 
 当前覆盖：
@@ -161,6 +199,19 @@ UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python -m unittest tests/rss/test
 - Flask `/api/stats`、`/api/search` 分页、POST 405
 - 默认源路径 fallback 到 `./netnewswire.sqlite3`
 - click `stats --json`
+- 真正只读查询、孤立状态统计、整日日期上限、错误输入和分页越界
+- 相同源库/归档拒绝、畸形 OPML 容错、作者关联替换与历史保留
+- LaunchAgent 元数据参数保留、小时/分钟范围检查
+
+2026-10-15：24 项专项单元测试通过；浏览器脚本覆盖 10 组场景，包括桌面、深色、
+390px / 320px 窄屏、滚动回归、乱序响应、错误重试和图片回退。
+脚本创建临时数据库和临时 HTTP 服务，使用独立 headless Chrome；外部图片请求在测试中模拟，
+不读取正式归档、不操作用户的 Chrome profile。截图和 `results.json` 写入指定目录。
+
+仓库门禁 `scripts/healthz/check_localtools.sh`：shellcheck、shfmt、Python 编译通过；
+608 项单元测试中有 1 项既有的无关失败：
+`tests.chat_export.test_export_chatgpt.ChatGPTExportCoreTests.test_html_goldens` 的
+`assistant_code` 样本在代码块后少一个空行。该失败独立复现，本次未修改相关模块。
 
 真实数据 smoke test：
 
@@ -168,7 +219,11 @@ UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python -m unittest tests/rss/test
 bin/nnw_archive sync --source prototypes/localtools/rss/netnewswire.sqlite3 --data-dir /tmp/nnw-archive-stable-smoke-20260426 --json
 ```
 
-已验证当前真实库约 21106 篇文章、72 个 feed；连续同步最终文章、状态、feed 均为 0 更新。
+上述为 2026-04 的历史同步验证：约 21106 篇文章、72 个 feed；连续同步最终文章、状态、
+feed 均为 0 更新。2026-10-15 使用现有归档的一致性副本，只验证读取：122196 篇文章、
+79 个 feed、2444 页（每页 50 篇）。没有对正式库执行同步或回填。
+
+本次检查和修复明细：[2026-10-15 review](../reviews/nnw-archive-2026-10-15.md)。
 
 ## 7. 已知注意点
 
@@ -176,3 +231,15 @@ bin/nnw_archive sync --source prototypes/localtools/rss/netnewswire.sqlite3 --da
   `cli.py` + `webapp.py`。后续可做一次无行为变化的清理。
 - 全量 unittest discovery 需要按当前 `src/localtools` 布局处理；`bin/nnw_archive`
   已加入健康检查的 shell 文件列表。
+- 图片仍依赖源站可访问性；没有备用地址且所有来源均拒绝访问/失效时，显示失败提示。
+  原样保存的文章 HTML 与历史 FTS 未在本次验收中执行批量改写或重建。
+- `install-launchd` 现在保留三个元数据覆盖参数并校验时刻；已有安装的 plist 不会自动改写。
+
+## 8. 2026-10-15 收束状态
+
+- 用户已验收新版 UI 和图片展示效果，并授权将本轮 nnw_archive 改动提交到本地。
+- 本轮功能、专项测试、浏览器验收与文档已完成，无待继续实现项；全仓库检查的
+  chat_export 既有失败保留为独立问题。
+- 临时 18766 只读副本预览已停止，副本与验收截图仍保留在 `/tmp/nnw-archive-review/`。
+- 原有 8765 进程未重启；正式归档没有执行同步、回填或 FTS 重建，已有 LaunchAgent 未改写。
+- gitool 的原有工作树改动不在本次提交中。没有推送远端；后续发布或服务切换需另行授权。

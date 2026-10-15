@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import plistlib
 import sqlite3
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from pathlib import Path
+from unittest.mock import patch
 
 from click.testing import CliRunner
 
@@ -630,6 +633,156 @@ class NetNewsWireArchiveTests(unittest.TestCase):
             self.assertEqual(result.exit_code, 0, msg=result.output)
             payload = json.loads(result.output)
             self.assertEqual(payload["articles"], 1)
+
+    def test_read_apis_use_readonly_connections_and_do_not_initialize_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, settings, opml = self.make_fixture(tmpdir)
+            self.sync(source, archive, settings, opml, "2026-01-01T00:00:00Z")
+            client = create_app(archive).test_client()
+            before = archive.read_bytes()
+            with patch.object(nnw_archive, "connect_archive", side_effect=AssertionError("Write connection opened")):
+                for url in ["/api/stats", "/api/feeds", "/api/search?q=history", "/api/articles/article-1"]:
+                    with self.subTest(url=url):
+                        self.assertEqual(client.get(url).status_code, 200)
+            self.assertEqual(archive.read_bytes(), before)
+            conn = nnw_archive.connect_readonly(archive)
+            try:
+                with self.assertRaises(sqlite3.OperationalError):
+                    conn.execute("UPDATE statuses SET read = 1")
+            finally:
+                conn.close()
+
+    def test_stats_ignore_orphan_statuses_and_match_unread_search(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, settings, opml = self.make_fixture(tmpdir)
+            self.sync(source, archive, settings, opml, "2026-01-01T00:00:00Z")
+            with closing(sqlite3.connect(archive)) as conn, conn:
+                conn.execute("INSERT INTO statuses VALUES('missing', 0, 1, 0)")
+                conn.execute("DELETE FROM statuses WHERE articleID = 'article-1'")
+            stats = nnw_archive.get_stats(archive)
+            self.assertEqual(stats["starred"], 0)
+            self.assertEqual(stats["unread"], 1)
+            self.assertEqual(stats["unread"], nnw_archive.count_articles(archive, unread=True))
+
+    def test_date_only_upper_bound_includes_whole_day_but_not_next_day(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, settings, opml = self.make_fixture(tmpdir)
+            self.sync(source, archive, settings, opml, "2026-01-01T00:00:00Z")
+            client = create_app(archive).test_client()
+            # The fixture is published at 2023-11-14 22:13:20 UTC.
+            data = client.get("/api/search?from=2023-11-14&to=2023-11-14").get_json()
+            self.assertEqual(data["total"], 1)
+            self.assertEqual(client.get("/api/search?to=2023-11-13").get_json()["total"], 0)
+            self.assertEqual(client.get("/api/search?to=1700000000").get_json()["total"], 1)
+            self.assertEqual(client.get("/api/search?to=2023-11-14T00:00:00Z").get_json()["total"], 0)
+            with closing(sqlite3.connect(archive)) as conn, conn:
+                conn.execute("UPDATE articles SET datePublished = ?", (nnw_archive.parse_date_filter("2023-11-15"),))
+            self.assertEqual(client.get("/api/search?to=2023-11-14").get_json()["total"], 0)
+
+    def test_invalid_date_filters_return_json_400(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, settings, opml = self.make_fixture(tmpdir)
+            self.sync(source, archive, settings, opml, "2026-01-01T00:00:00Z")
+            client = create_app(archive).test_client()
+            for query in ["from=invalid", "to=nan", "to=inf", "to=2026-02-30", "from=2026-01-02&to=2026-01-01"]:
+                with self.subTest(query=query):
+                    response = client.get(f"/api/search?{query}")
+                    self.assertEqual(response.status_code, 400)
+                    self.assertIn("error", response.get_json())
+
+    def test_pagination_clamps_out_of_range_page_and_handles_empty_results(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, settings, opml = self.make_fixture(tmpdir)
+            self.sync(source, archive, settings, opml, "2026-01-01T00:00:00Z")
+            client = create_app(archive).test_client()
+            payload = client.get("/api/search?page=1000&page_size=10").get_json()
+            self.assertEqual((payload["page"], payload["pages"], len(payload["items"])), (1, 1, 1))
+            payload = client.get("/api/search?page=1000&q=nonexistent").get_json()
+            self.assertEqual((payload["page"], payload["pages"], payload["items"]), (1, 1, []))
+
+    def test_web_template_assets_and_missing_article(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, settings, opml = self.make_fixture(tmpdir)
+            self.sync(source, archive, settings, opml, "2026-01-01T00:00:00Z")
+            client = create_app(archive).test_client()
+            self.assertIn(b'lang="zh-CN"', client.get("/").data)
+            for path in ["/static/app.js", "/static/style.css"]:
+                response = client.get(path)
+                self.assertEqual(response.status_code, 200)
+                response.close()
+            self.assertEqual(client.get("/api/articles/missing").status_code, 404)
+            self.assertIn("error", client.get("/api/articles/missing").get_json())
+
+    def test_search_excerpt_strips_markup_and_falls_back_to_html_body(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, settings, opml = self.make_fixture(tmpdir)
+            self.sync(source, archive, settings, opml, "2026-01-01T00:00:00Z")
+            with closing(sqlite3.connect(archive)) as conn, conn:
+                conn.execute("UPDATE articles SET summary = ''")
+            article = nnw_archive.search_articles(archive)[0]
+            self.assertEqual(article["excerpt"], "Hello archive history")
+            self.assertNotIn("preview_source", article)
+
+    def test_sync_refuses_source_as_archive_including_hardlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, _, settings, opml = self.make_fixture(tmpdir)
+            alias = Path(tmpdir) / "alias.sqlite3"
+            alias.hardlink_to(source)
+            before = source.read_bytes()
+            for archive in [source, alias]:
+                with self.subTest(archive=archive), self.assertRaisesRegex(ValueError, "must be different"):
+                    self.sync(source, archive, settings, opml, "2026-01-01T00:00:00Z")
+            self.assertEqual(source.read_bytes(), before)
+
+    def test_malformed_opml_does_not_abort_sync(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, settings, opml = self.make_fixture(tmpdir)
+            opml.write_text("<opml/>", encoding="utf-8")
+            result = self.sync(source, archive, settings, opml, "2026-01-01T00:00:00Z")
+            self.assertEqual(result.articles_inserted, 1)
+
+    def test_author_link_replacement_preserves_retained_article_authors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, settings, opml = self.make_modern_fixture(tmpdir, json.dumps([{"name": "Ada"}]))
+            self.sync(source, archive, settings, opml, "2026-01-01T00:00:00Z")
+            with closing(sqlite3.connect(source)) as conn, conn:
+                conn.execute("UPDATE articles SET authors = ?", (json.dumps([{"name": "Grace"}]),))
+            self.sync(source, archive, settings, opml, "2026-01-02T00:00:00Z")
+            self.assertEqual([a["name"] for a in nnw_archive.get_article(archive, "article-1")["authors"]], ["Grace"])
+            with closing(sqlite3.connect(source)) as conn, conn:
+                conn.execute("DELETE FROM articles")
+            self.sync(source, archive, settings, opml, "2026-01-03T00:00:00Z")
+            self.assertEqual([a["name"] for a in nnw_archive.get_article(archive, "article-1")["authors"]], ["Grace"])
+
+    def test_invalid_author_json_keeps_existing_links_but_empty_list_clears_them(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            source, archive, settings, opml = self.make_modern_fixture(tmpdir, json.dumps([{"name": "Ada"}]))
+            self.sync(source, archive, settings, opml, "2026-01-01T00:00:00Z")
+            with closing(sqlite3.connect(source)) as conn, conn:
+                conn.execute("UPDATE articles SET authors = '[invalid'")
+            self.sync(source, archive, settings, opml, "2026-01-02T00:00:00Z")
+            self.assertEqual(len(nnw_archive.get_article(archive, "article-1")["authors"]), 1)
+            with closing(sqlite3.connect(source)) as conn, conn:
+                conn.execute("UPDATE articles SET authors = '[]'")
+            self.sync(source, archive, settings, opml, "2026-01-03T00:00:00Z")
+            self.assertEqual(nnw_archive.get_article(archive, "article-1")["authors"], [])
+
+    def test_launchd_keeps_metadata_overrides_and_rejects_invalid_schedule(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runner = CliRunner()
+            result = runner.invoke(nnw_cli.cli, [
+                "install-launchd", "--dry-run", "--data-dir", str(root),
+                "--feed-settings-db", str(root / "settings.db"),
+                "--opml", str(root / "feeds.opml"), "--feed-metadata", str(root / "metadata.plist"),
+            ])
+            self.assertEqual(result.exit_code, 0, result.output)
+            arguments = plistlib.loads(result.stdout_bytes)["ProgramArguments"]
+            for flag, filename in [("--feed-settings-db", "settings.db"), ("--opml", "feeds.opml"), ("--feed-metadata", "metadata.plist")]:
+                self.assertEqual(arguments[arguments.index(flag) + 1], str((root / filename).resolve()))
+            for flag, value in [("--hour", "24"), ("--minute", "60"), ("--hour", "-1")]:
+                result = runner.invoke(nnw_cli.cli, ["install-launchd", "--dry-run", flag, value])
+                self.assertNotEqual(result.exit_code, 0)
 
 
 if __name__ == "__main__":

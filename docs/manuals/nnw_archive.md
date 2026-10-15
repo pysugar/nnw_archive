@@ -66,6 +66,22 @@ Web UI 基于 Flask，只提供只读接口：
 搜索支持全文搜索、feed、folder、starred、unread 和时间过滤；返回结果带
 `page`、`page_size`、`total`、`pages` 和 `items`。
 
+界面使用中文，左侧是搜索和文章列表，右侧是独立滚动的阅读区。列表滚动到底部后
+点击文章，正文仍从开头显示；切换文章不会改变列表位置。手机和窄窗口下点击文章进入
+阅读页，左上角返回按钮回到原来的列表位置。
+
+- 搜索框右侧的筛选按钮可展开文件夹、订阅源和日期范围。
+- 未读与星标可以同时开启；点击「清除筛选」恢复完整列表。
+- 日期范围按 UTC 计算，结束日期包含当天所有文章；无效范围会提示错误。
+- 右上角切换深浅主题；阅读工具栏的 `A−` / `A+` 调整字号，偏好会保存在当前浏览器。
+- 点击「阅读原文」打开来源页面；在这里阅读不会改变 NetNewsWire 中的未读或星标。
+- 图片地址加载失败时，会尝试文章中保存的备用图片地址。机器之心等订阅保存的
+  `data-src` 原图可以自动回退；全部地址失效时显示提示，可前往原文查看。
+- 加载失败可点击「重试」；筛选无结果时可以直接清除条件。
+
+Web 和 `stats` 使用 SQLite 只读连接，不再隐式创建归档库。首次使用先运行
+`nnw_archive sync`。更新代码后，需要重新启动当前 Web 进程，再刷新页面。
+
 分页示例：
 
 ```bash
@@ -86,6 +102,9 @@ nnw_archive install-launchd
 nnw_archive install-launchd --dry-run
 ```
 
+`--feed-settings-db`、`--opml`、`--feed-metadata` 会写入生成的同步命令，
+`--hour` 范围为 0–23，`--minute` 为 0–59。更新代码不会自动修改已安装的 plist。
+
 移除：
 
 ```bash
@@ -105,6 +124,8 @@ nnw_archive uninstall-launchd
 - `last_seen_at` 每次源库仍存在该文章时更新。
 - 源库删除文章时归档库不删除，只写 `source_deleted_at`。
 - read/starred/dateArrived 使用最新 NetNewsWire 状态覆盖。
+- 源库和归档不能是同一文件（包括符号链接、硬链接），避免误写 NetNewsWire 原库。
+- 仍在源库中的文章会更新作者关联；源库已移除的文章保留作者信息。坏作者 JSON 不清空旧关联。
 
 ## 日志
 
@@ -129,11 +150,17 @@ nnw_archive uninstall-launchd
 ## 验证
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python -m unittest tests/rss/test_nnw_archive.py
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python -m py_compile src/localtools/nnw_archive/core.py src/localtools/nnw_archive/cli.py src/localtools/nnw_archive/webapp.py
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python -m unittest tests/rss/test_nnw_archive.py
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python tests/rss/nnw_archive_browser_check.py --output-dir /tmp/nnw-archive-browser-check
+node --check src/localtools/nnw_archive/static/app.js
+node --check src/localtools/nnw_archive/static/reader.js
 ```
 
-当前真实数据 smoke test 使用：
+浏览器脚本使用临时样本和独立 headless Chrome，验证滚动、筛选、图片、错误恢复与移动端，
+不会连接真实归档或用户的浏览器 profile。默认使用已安装的 Chrome（`--channel chrome`）。
+验收截图和 `results.json` 保存在 `--output-dir`。
+
+历史真实数据 smoke test 使用过以下命令；执行时写入的是指定临时目录：
 
 ```bash
 bin/nnw_archive sync --source prototypes/localtools/rss/netnewswire.sqlite3 --data-dir /tmp/nnw-archive-stable-smoke-20260426 --json

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>阅读归档 · NetNewsWire</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="{{ url_for('static', filename='app.js') }}" defer></script>
+</head>
+<body>
+  <svg class="icon-defs" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+    <symbol id="i-book" viewBox="0 0 24 24"><path d="M12 5v16m0-16C9 3 5 3 2 4v15c3-1 7-1 10 2 3-3 7-3 10-2V4c-3-1-7-1-10 1Z"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="7"/><path d="m16 16 5 5"/></symbol>
+    <symbol id="i-filter" viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="3"/><circle cx="16" cy="17" r="3"/></symbol>
+    <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2-5.6-3-5.6 3 1.1-6.2L3 9.6l6.2-.9L12 3Z"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="m14 6-6 6 6 6"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 3h7v7m0-7L10 14m0-9H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M21 13a9 9 0 0 1-10-10A9 9 0 1 0 21 13Z"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+  </svg>
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="NetNewsWire 阅读归档首页">
+      <span class="brand-mark"><svg class="icon"><use href="#i-book"/></svg></span>
+      <span><strong>NetNewsWire</strong><span class="brand-caption">阅读归档</span></span>
+    </a>
+    <div class="archive-stats" id="stats" aria-label="归档统计"><span>正在读取归档…</span></div>
+    <button class="icon-button" id="theme" aria-label="切换颜色主题" title="切换颜色主题" type="button"><svg class="icon"><use href="#i-moon"/></svg></button>
+  </header>
+  <div class="app-notice" id="app-notice" role="status" hidden></div>
+  <div class="workspace" id="workspace">
+    <aside class="library" aria-label="文章列表">
+      <div class="library-controls">
+        <div class="section-heading"><h1>我的归档</h1><span class="quiet-label">让好内容留下来</span></div>
+        <form id="filters" role="search">
+          <div class="search-row">
+            <div class="search-field">
+              <svg class="icon"><use href="#i-search"/></svg>
+              <input id="q" type="search" placeholder="搜索标题与正文…" aria-label="搜索标题与正文" autocomplete="off">
+              <button id="search-submit" type="submit" class="search-submit" aria-label="搜索" title="搜索">↵</button>
+            </div>
+            <button id="filter-toggle" class="icon-button filter-toggle" type="button" aria-label="展开筛选" aria-expanded="false" aria-controls="filter-panel" title="筛选"><svg class="icon"><use href="#i-filter"/></svg><span id="filter-count" hidden></span></button>
+          </div>
+          <div class="view-tabs" aria-label="文章状态">
+            <button id="all" type="button" aria-pressed="true">全部文章</button>
+            <button id="unread" type="button" aria-pressed="false"><span class="unread-dot"></span>未读</button>
+            <button id="starred" type="button" aria-pressed="false"><svg class="icon"><use href="#i-star"/></svg>星标</button>
+          </div>
+          <div id="filter-panel" class="filter-panel" hidden>
+            <label>文件夹<select id="folder"><option value="">全部文件夹</option></select></label>
+            <label>订阅源<select id="feed"><option value="">全部订阅源</option></select></label>
+            <div class="date-filters"><label>开始日期<input id="date-from" type="date"></label><label>结束日期<input id="date-to" type="date"></label></div>
+            <span class="filter-hint">日期按 UTC 计算，包含结束日。</span>
+          </div>
+        </form>
+        <div class="list-summary"><span id="result-count" role="status">正在加载…</span><button id="reset" class="text-button" type="button" hidden>清除筛选</button><span class="sort-label">最新优先</span></div>
+      </div>
+      <div class="results" id="results" aria-label="搜索结果" aria-busy="true"></div>
+      <footer class="pager">
+        <label class="page-size-label"><span class="sr-only">每页文章数</span><select id="page-size"><option value="25">25 篇 / 页</option><option value="50" selected>50 篇 / 页</option><option value="100">100 篇 / 页</option><option value="200">200 篇 / 页</option></select></label>
+        <div class="page-navigation"><button id="prev" class="icon-button" type="button" aria-label="上一页" disabled><svg class="icon"><use href="#i-arrow"/></svg></button><span id="page-label">1 / 1</span><button id="next" class="icon-button" type="button" aria-label="下一页" disabled><svg class="icon flip"><use href="#i-arrow"/></svg></button></div>
+      </footer>
+    </aside>
+    <main class="reader" id="reader" aria-label="文章阅读区">
+      <div class="reader-toolbar">
+        <button class="icon-button back-button" id="back" type="button" aria-label="返回文章列表" title="返回文章列表"><svg class="icon"><use href="#i-arrow"/></svg></button>
+        <div class="reader-breadcrumb"><svg class="icon"><use href="#i-book"/></svg><span id="reader-source">阅读空间</span></div>
+        <div class="reader-actions">
+          <div class="font-controls" aria-label="正文字号"><button id="font-smaller" type="button" aria-label="缩小正文字号" title="缩小正文字号">A−</button><button id="font-larger" type="button" aria-label="放大正文字号" title="放大正文字号">A+</button></div>
+          <a id="original" class="original-link" target="_blank" rel="noopener noreferrer" hidden>阅读原文<svg class="icon"><use href="#i-external"/></svg></a>
+        </div>
+      </div>
+      <div class="reader-stage" id="reader-stage" aria-busy="false">
+        <div class="reader-state" id="reader-state" role="status">
+          <div class="state-art"><svg class="icon"><use href="#i-book"/></svg></div>
+          <span class="eyebrow">YOUR READING ARCHIVE</span>
+          <h2 id="state-title">值得留下，也值得重读</h2>
+          <p id="state-description">从左侧选择一篇文章，开始安静地阅读。<br>也可以搜索关键词，找回曾经的灵感。</p>
+          <button id="retry-article" class="primary-button" type="button" hidden>重新加载</button>
+          <span class="state-note">阅读不会改变 NetNewsWire 中的未读或星标状态</span>
+        </div>
+        <iframe id="article-frame" title="文章正文" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox" referrerpolicy="no-referrer" hidden></iframe>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

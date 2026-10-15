@@ -224,8 +224,8 @@ def web(
 @cli.command("install-launchd")
 @common_options
 @click.option("--label", default=core.DEFAULT_LABEL, show_default=True)
-@click.option("--hour", default=2, show_default=True, type=int)
-@click.option("--minute", default=15, show_default=True, type=int)
+@click.option("--hour", default=2, show_default=True, type=click.IntRange(0, 23))
+@click.option("--minute", default=15, show_default=True, type=click.IntRange(0, 59))
 @click.option("--allow-schema-change", is_flag=True)
 @click.option("--load", is_flag=True, help="Run launchctl load after writing the plist.")
 @click.option("--dry-run", is_flag=True, help="Print plist to stdout without writing.")
@@ -246,13 +246,19 @@ def install_launchd(
     verbose: bool,
 ) -> None:
     """Install a daily LaunchAgent that runs nnw_archive sync."""
-    del feed_settings_db, opml_path, feed_metadata_path
     log_path = prepare_logging(data_dir, verbose)
     command = [str(bin_command_path()), "sync", "--data-dir", str(data_dir)]
     if source:
         command.extend(["--source", str(source)])
     if archive_db:
         command.extend(["--archive-db", str(archive_db)])
+    for flag, path in (
+        ("--feed-settings-db", feed_settings_db),
+        ("--opml", opml_path),
+        ("--feed-metadata", feed_metadata_path),
+    ):
+        if path is not None:
+            command.extend([flag, str(path.expanduser().resolve())])
     if allow_schema_change:
         command.append("--allow-schema-change")
 
