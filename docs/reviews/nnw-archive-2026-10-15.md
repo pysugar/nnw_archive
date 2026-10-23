@@ -1,5 +1,9 @@
 # nnw_archive 功能审查与阅读界面优化
 
+> 这是迁移前的历史验收，原始路径和结果保留。2026-10-24 起源码位于
+> `src/nnw_archive/`、测试位于 `tests/`；当前检查入口为 `scripts/check.sh`。
+> 独立迁移记录见[迁移文档](../migration/standalone-20261024.md)。
+
 日期：2026-10-15。范围为稳定入口 `bin/nnw_archive` 对应的 `src/localtools/nnw_archive/`、
 专项测试和说明文档。用户已验收展示效果并授权本地提交；交付限于本地代码和文档，
 未推送、安装 LaunchAgent，也没有同步或回填正式数据库。

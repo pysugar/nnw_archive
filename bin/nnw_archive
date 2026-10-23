@@ -1,3 +1,22 @@
-#!/bin/bash
-source "$(cd "$(dirname "$0")" && pwd -P)/pyrunner.sh"
-pyrun src/localtools/nnw_archive/cli.py "$@"
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
+NNW_ARCHIVE_INTERPRETER="${NNW_ARCHIVE_PYTHON:-python3}"
+if [[ "$NNW_ARCHIVE_INTERPRETER" != */* ]]; then
+  if ! NNW_ARCHIVE_INTERPRETER="$(command -v -- "$NNW_ARCHIVE_INTERPRETER")"; then
+    printf 'Python interpreter not found: %s\n' "${NNW_ARCHIVE_PYTHON:-python3}" >&2
+    exit 127
+  fi
+fi
+# Preserve venv paths and the caller's cwd for source database discovery.
+if [[ "$NNW_ARCHIVE_INTERPRETER" != /* ]]; then
+  NNW_ARCHIVE_INTERPRETER="$PWD/$NNW_ARCHIVE_INTERPRETER"
+fi
+if [[ ! -f "$NNW_ARCHIVE_INTERPRETER" || ! -x "$NNW_ARCHIVE_INTERPRETER" ]]; then
+  printf 'Python interpreter is not executable: %s\n' "$NNW_ARCHIVE_INTERPRETER" >&2
+  exit 127
+fi
+exec env -u VIRTUAL_ENV -u UV_PROJECT -u UV_WORKING_DIR -u UV_CONFIG_FILE \
+  uv run --no-config --no-project --no-python-downloads --python "$NNW_ARCHIVE_INTERPRETER" \
+  "$NNW_ARCHIVE_INTERPRETER" "$ROOT/src/nnw_archive/cli.py" "$@"

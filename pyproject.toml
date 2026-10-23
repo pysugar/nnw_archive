@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nnw-archive"
+version = "0.1.0"
+description = "Long-term NetNewsWire archive with a read-only search and reading UI"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = ["click>=8.3.3", "flask>=3.1.3"]
+
+[project.optional-dependencies]
+browser = ["playwright>=1.58.0"]
+
+[project.scripts]
+nnw_archive = "nnw_archive.cli:cli"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nnw_archive"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/bin", "/scripts", "/docs", "/prototypes", "/README.md", "/AGENTS.md", "/pyproject.toml", "/uv.lock"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/nnw_archive/cli.py" = ["E402"]

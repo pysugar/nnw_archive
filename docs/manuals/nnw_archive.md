@@ -1,5 +1,8 @@
 # nnw_archive
 
+独立项目：`/opt/foundry/projects/pysugar/nnw_archive`。源码、测试和文档在本项目维护；
+本机 `/opt/local/bin/nnw_archive` 保留为转发入口。安装和开发入口见[README](../../README.md)。
+
 NetNewsWire On My Mac 长期历史归档工具。它只读 NetNewsWire 原生 SQLite 数据库，
 通过 SQLite backup API 取得一致快照，再合并到独立历史库：
 
@@ -105,6 +108,10 @@ nnw_archive install-launchd --dry-run
 `--feed-settings-db`、`--opml`、`--feed-metadata` 会写入生成的同步命令，
 `--hour` 范围为 0–23，`--minute` 为 0–59。更新代码不会自动修改已安装的 plist。
 
+新 plist 使用当前 Python 解释器和 CLI 文件的绝对路径，不依赖 shell 的工作目录或旧仓库。
+checkout 或解释器迁移后需重新生成。既有 `/opt/local/bin/nnw_archive` plist 可继续走本机
+转发入口；此次独立迁移没有重装、加载或重启 LaunchAgent。
+
 移除：
 
 ```bash
@@ -140,7 +147,7 @@ nnw_archive uninstall-launchd
 常见排查：
 
 - `NetNewsWire source database not found`：确认原生容器路径是否存在，或传
-  `--source prototypes/localtools/rss/netnewswire.sqlite3` / 旧备份路径。
+  `--source /path/to/DB.sqlite3` / 旧备份路径。
 - `Source schema hash changed`：阅读错误里的变化级别和 schema diff。核心表定义变化
   要重点确认；仅 index/trigger/view 变化通常可接受。确认无误后用
   `--allow-schema-change` 记录新 schema。
@@ -150,17 +157,19 @@ nnw_archive uninstall-launchd
 ## 验证
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python -m unittest tests/rss/test_nnw_archive.py
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python tests/rss/nnw_archive_browser_check.py --output-dir /tmp/nnw-archive-browser-check
-node --check src/localtools/nnw_archive/static/app.js
-node --check src/localtools/nnw_archive/static/reader.js
+NNW_ARCHIVE_PYTHON=/opt/local/.venv/bin/python scripts/check.sh
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python tests/nnw_archive_browser_check.py --output-dir /tmp/nnw-archive-browser-check
 ```
 
 浏览器脚本使用临时样本和独立 headless Chrome，验证滚动、筛选、图片、错误恢复与移动端，
 不会连接真实归档或用户的浏览器 profile。默认使用已安装的 Chrome（`--channel chrome`）。
 验收截图和 `results.json` 保存在 `--output-dir`。
 
-历史真实数据 smoke test 使用过以下命令；执行时写入的是指定临时目录：
+macOS 上通过 Codex 执行浏览器脚本时，须从首次启动起使用经批准的沙箱外命令，
+不能在默认沙箱中尝试启动 Chrome/Chromium；headless 同样适用。普通检查脚本不启动浏览器。
+
+以下为旧 `/opt/local` 仓库 2026-04 的历史命令，不是新 checkout 的验收命令；
+原数据库 symlink 未迁入项目。执行时写入的是指定临时目录：
 
 ```bash
 bin/nnw_archive sync --source prototypes/localtools/rss/netnewswire.sqlite3 --data-dir /tmp/nnw-archive-stable-smoke-20260426 --json

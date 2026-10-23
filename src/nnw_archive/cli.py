@@ -28,14 +28,6 @@ _bootstrap_direct_execution()
 from . import core
 
 
-def repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
-
-
-def bin_command_path() -> Path:
-    return repo_root() / "bin" / "nnw_archive"
-
-
 def launchd_plist_path(label: str) -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
 
@@ -247,7 +239,8 @@ def install_launchd(
 ) -> None:
     """Install a daily LaunchAgent that runs nnw_archive sync."""
     log_path = prepare_logging(data_dir, verbose)
-    command = [str(bin_command_path()), "sync", "--data-dir", str(data_dir)]
+    # Keep the venv executable path so scheduled runs use the same dependencies.
+    command = [sys.executable, str(Path(__file__).resolve()), "sync", "--data-dir", str(data_dir)]
     if source:
         command.extend(["--source", str(source)])
     if archive_db:
@@ -269,8 +262,7 @@ def install_launchd(
         "StandardOutPath": str(data_dir / "launchd.out.log"),
         "StandardErrorPath": str(data_dir / "launchd.err.log"),
         "EnvironmentVariables": {
-            "UV_CACHE_DIR": "/tmp/uv-cache",
-            "PATH": "/opt/local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
         },
     }
 

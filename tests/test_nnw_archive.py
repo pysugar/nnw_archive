@@ -13,10 +13,10 @@ from unittest.mock import patch
 from click.testing import CliRunner
 
 
-ROOT = Path(__file__).resolve().parents[2]
-LOCALTOOLS_ROOT = ROOT / "src" / "localtools"
-if str(LOCALTOOLS_ROOT) not in sys.path:
-    sys.path.insert(0, str(LOCALTOOLS_ROOT))
+ROOT = Path(__file__).resolve().parents[1]
+SOURCE_ROOT = ROOT / "src"
+if str(SOURCE_ROOT) not in sys.path:
+    sys.path.insert(0, str(SOURCE_ROOT))
 
 from nnw_archive import cli as nnw_cli
 from nnw_archive import core as nnw_archive
@@ -778,6 +778,7 @@ class NetNewsWireArchiveTests(unittest.TestCase):
             ])
             self.assertEqual(result.exit_code, 0, result.output)
             arguments = plistlib.loads(result.stdout_bytes)["ProgramArguments"]
+            self.assertEqual(arguments[:3], [sys.executable, str(Path(nnw_cli.__file__).resolve()), "sync"])
             for flag, filename in [("--feed-settings-db", "settings.db"), ("--opml", "feeds.opml"), ("--feed-metadata", "metadata.plist")]:
                 self.assertEqual(arguments[arguments.index(flag) + 1], str((root / filename).resolve()))
             for flag, value in [("--hour", "24"), ("--minute", "60"), ("--hour", "-1")]:

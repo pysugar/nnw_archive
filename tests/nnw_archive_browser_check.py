@@ -14,14 +14,14 @@ from contextlib import closing
 from pathlib import Path
 from urllib.parse import urlparse
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from flask import request
 from playwright.sync_api import expect, sync_playwright
 from werkzeug.serving import WSGIRequestHandler, make_server
 
-from tests.rss.test_nnw_archive import (
+from tests.test_nnw_archive import (
     create_feed_settings_db,
     create_opml,
     create_source_db,

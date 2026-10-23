@@ -1,9 +1,13 @@
 # nnw_archive 项目上下文
 
-> 最后更新：2026-10-15
-> 稳定命令：`/opt/local/bin/nnw_archive`  
-> 源码：`/opt/local/src/localtools/nnw_archive/`  
-> 原型保留：`/opt/local/prototypes/localtools/rss/`
+> 最后更新：2026-10-24
+> 独立项目：`/opt/foundry/projects/pysugar/nnw_archive`
+>
+> 稳定命令：`bin/nnw_archive`；本机 `/opt/local/bin/nnw_archive` 仅转发
+>
+> 源码：`src/nnw_archive/`；原型：`prototypes/rss/`
+>
+> Remote：`git@z.github.com:pysugar/nnw_archive.git`
 
 `nnw_archive` 是 NetNewsWire On My Mac 的长期历史归档工具。目标是只读读取
 NetNewsWire 原生 SQLite 数据库，把文章、状态、作者和 feed 元数据合并到独立历史库，
@@ -24,7 +28,7 @@ nnw_archive uninstall-launchd
 源码结构：
 
 ```text
-src/localtools/nnw_archive/
+src/nnw_archive/
 ├── __init__.py
 ├── cli.py                  # Click entry point and LaunchAgent configuration
 ├── core.py                 # Archive sync, SQLite schema and queries
@@ -36,15 +40,17 @@ src/localtools/nnw_archive/
     └── reader.js           # Sandboxed image fallback and reading preferences
 ```
 
-`bin/nnw_archive` 是薄 wrapper：
+`bin/nnw_archive` 通过 uv 调用所选解释器，保留调用目录和参数，不同步依赖。
+解释器由 `NNW_ARCHIVE_PYTHON` 指定，默认 `python3`。本机使用：
 
 ```bash
-source "$(cd "$(dirname "$0")" && pwd -P)/pyrunner.sh"
-pyrun src/localtools/nnw_archive/cli.py "$@"
+NNW_ARCHIVE_PYTHON=/opt/local/.venv/bin/python bin/nnw_archive --help
 ```
 
-Prototype `prototypes/localtools/rss/nnw_archive.py` 先保留作为来源和对照；稳定开发应改
-`src/localtools/nnw_archive/`，不要反向依赖 prototype。
+Prototype `prototypes/rss/nnw_archive.py` 保留作为来源和对照；稳定开发应改
+`src/nnw_archive/`，不要反向依赖 prototype。安装包提供 `nnw_archive` console script。
+新生成的 LaunchAgent 直接绑定当前解释器和 CLI 文件路径；搬动 checkout 或环境后需重新生成。
+既有 plist 仍可通过 `/opt/local/bin/nnw_archive` 转发；本次未重装或加载服务。
 
 ## 2. 路径和依赖
 
@@ -182,9 +188,9 @@ Prototype `prototypes/localtools/rss/nnw_archive.py` 先保留作为来源和对
 专项测试：
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python -m unittest tests/rss/test_nnw_archive.py
+NNW_ARCHIVE_PYTHON=/opt/local/.venv/bin/python scripts/check.sh
 
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python tests/rss/nnw_archive_browser_check.py --output-dir /tmp/nnw-archive-browser-check
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python tests/nnw_archive_browser_check.py --output-dir /tmp/nnw-archive-browser-check
 ```
 
 当前覆盖：
@@ -205,10 +211,12 @@ UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python tests
 
 2026-10-15：24 项专项单元测试通过；浏览器脚本覆盖 10 组场景，包括桌面、深色、
 390px / 320px 窄屏、滚动回归、乱序响应、错误重试和图片回退。
-脚本创建临时数据库和临时 HTTP 服务，使用独立 headless Chrome；外部图片请求在测试中模拟，
+脚本创建临时数据库和临时 HTTP 服务，使用独立 headless Chrome；macOS 上须经批准在沙箱外启动，
+不得先从默认沙箱尝试。外部图片请求在测试中模拟，
 不读取正式归档、不操作用户的 Chrome profile。截图和 `results.json` 写入指定目录。
 
-仓库门禁 `scripts/healthz/check_localtools.sh`：shellcheck、shfmt、Python 编译通过；
+以下是迁移前 2026-10-15 的历史记录，不是当前独立仓库门禁结果。
+原仓库门禁 `scripts/healthz/check_localtools.sh`：shellcheck、shfmt、Python 编译通过；
 608 项单元测试中有 1 项既有的无关失败：
 `tests.chat_export.test_export_chatgpt.ChatGPTExportCoreTests.test_html_goldens` 的
 `assistant_code` 样本在代码块后少一个空行。该失败独立复现，本次未修改相关模块。
@@ -229,13 +237,15 @@ feed 均为 0 更新。2026-10-15 使用现有归档的一致性副本，只验�
 
 - `core.py` 仍保留从 prototype 复制来的旧 argparse/http.server 辅助代码；稳定入口已经走
   `cli.py` + `webapp.py`。后续可做一次无行为变化的清理。
-- 全量 unittest discovery 需要按当前 `src/localtools` 布局处理；`bin/nnw_archive`
-  已加入健康检查的 shell 文件列表。
+- 独立仓库测试使用 `tests/` 与 `src/`；旧 localtools 门禁只检查本机转发脚本。
 - 图片仍依赖源站可访问性；没有备用地址且所有来源均拒绝访问/失效时，显示失败提示。
   原样保存的文章 HTML 与历史 FTS 未在本次验收中执行批量改写或重建。
 - `install-launchd` 现在保留三个元数据覆盖参数并校验时刻；已有安装的 plist 不会自动改写。
 
 ## 8. 2026-10-15 收束状态
+
+以下为历史记录。当前迁移状态、验证结果和边界见
+[2026-10-24 独立迁移](../migration/standalone-20261024.md)。
 
 - 用户已验收新版 UI 和图片展示效果，并授权将本轮 nnw_archive 改动提交到本地。
 - 本轮功能、专项测试、浏览器验收与文档已完成，无待继续实现项；全仓库检查的

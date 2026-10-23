@@ -1,17 +1,17 @@
 # NetNewsWire Archive Prototype
 
-> 稳定版已经迁移到 `bin/nnw_archive` 和 `src/localtools/nnw_archive/`。本目录保留为
-> prototype 来源、真实 NetNewsWire symlink 和对照验证区；日常使用请优先运行
+> 稳定版已经迁移到 `bin/nnw_archive` 和 `src/nnw_archive/`。本目录保留为
+> prototype 来源和对照验证区；旧机器的数据库 symlink 未迁入；日常使用请优先运行
 > `nnw_archive sync` / `nnw_archive web`。
 
 `nnw_archive.py` 是 NetNewsWire 长期历史归档原型。它只读 NetNewsWire 的原生
 SQLite 数据库，通过 SQLite backup API 取得一致快照，然后把文章、状态、作者和
 feed 元数据合并到独立历史库。
 
-默认源库：
+历史使用的本地源库 symlink（未随项目迁移，验证时请显式指定临时源库）：
 
 ```bash
-prototypes/localtools/rss/netnewswire.sqlite3
+prototypes/rss/netnewswire.sqlite3
 ```
 
 默认归档库：
@@ -35,31 +35,31 @@ Prototype 直接执行仍可用于对照：
 首次同步：
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python prototypes/localtools/rss/nnw_archive.py sync
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python prototypes/rss/nnw_archive.py sync
 ```
 
 查看统计：
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python prototypes/localtools/rss/nnw_archive.py stats
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python prototypes/rss/nnw_archive.py stats
 ```
 
 启动本地只读搜索页面：
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python prototypes/localtools/rss/nnw_archive.py web --port 8765
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python prototypes/rss/nnw_archive.py web --port 8765
 ```
 
 导入旧备份或 Time Machine 里的旧 `DB.sqlite3`：
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python prototypes/localtools/rss/nnw_archive.py sync --source /path/to/old/DB.sqlite3
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python prototypes/rss/nnw_archive.py sync --source /path/to/old/DB.sqlite3
 ```
 
 如果旧库来自 NetNewsWire 不同 schema，先人工确认结构，再显式允许：
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python prototypes/localtools/rss/nnw_archive.py sync --source /path/to/old/DB.sqlite3 --allow-schema-change
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python prototypes/rss/nnw_archive.py sync --source /path/to/old/DB.sqlite3 --allow-schema-change
 ```
 
 ## Daily LaunchAgent
@@ -67,19 +67,19 @@ UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python prototypes/localtools/rss/
 生成每日同步任务，默认 02:15 运行：
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python prototypes/localtools/rss/nnw_archive.py install-launchd
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python prototypes/rss/nnw_archive.py install-launchd
 ```
 
 仅预览 plist：
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python prototypes/localtools/rss/nnw_archive.py install-launchd --dry-run
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python prototypes/rss/nnw_archive.py install-launchd --dry-run
 ```
 
 移除：
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python prototypes/localtools/rss/nnw_archive.py uninstall-launchd
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python prototypes/rss/nnw_archive.py uninstall-launchd
 ```
 
 ## Data Semantics
@@ -105,6 +105,6 @@ UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python prototypes/localtools/rss/
 ## Validation
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python -m py_compile prototypes/localtools/rss/nnw_archive.py
-UV_CACHE_DIR=/tmp/uv-cache uv run --no-sync -- python -m unittest tests/rss/test_nnw_archive.py
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python -m py_compile prototypes/rss/nnw_archive.py
+UV_CACHE_DIR=/tmp/uv-cache uv run --no-project /opt/local/.venv/bin/python -m unittest tests/test_nnw_archive.py
 ```
