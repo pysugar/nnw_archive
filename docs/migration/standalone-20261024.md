@@ -6,11 +6,23 @@
 
 - 原仓库：`/opt/local`，迁出前 HEAD：`bf3b8fc9f184be17db8f38961f30afed2bed643b`，工作树干净。
 - 新仓库：`/opt/foundry/projects/pysugar/nnw_archive`，默认分支 `main`。
-- Remote：`git@z.github.com:pysugar/nnw_archive.git`；只读 `git ls-remote` 成功且无 refs，尚未推送。
+- Remote：`git@z.github.com:pysugar/nnw_archive.git`；`main` 已首次推送并设置跟踪 `origin/main`。
 - 从本地独立 clone 中用 git-filter-repo 按路径提取 7 项相关提交，不改写原仓库。
 - 最新历史提交：`3497ed067f95634223625bdf2132b45ea9fd183f` → `ecc226b`。
 - [提交映射](commit-map.txt) 保留原始与新 SHA；[文件清单](source-manifest.tsv) 记录迁出前 SHA256。
   移除旧受控副本之前，逐一核对了 16 个文件与新仓库提取提交中的字节一致性。
+
+## 迁移提交与推送状态
+
+2026-10-24，两个仓库的迁移提交均已推送至各自 `origin/main`：
+
+| 仓库 | 迁移提交 | Remote |
+| --- | --- | --- |
+| nnw_archive | [`e0e9767af0290c69e68d44c9886e86423d10237a`](https://github.com/pysugar/nnw_archive/commit/e0e9767af0290c69e68d44c9886e86423d10237a) | `git@z.github.com:pysugar/nnw_archive.git` |
+| /opt/local | [`e2f67afd7f0eddfbc133a94d07456f8220d11d8b`](https://github.com/muchenzhan/optlocal/commit/e2f67afd7f0eddfbc133a94d07456f8220d11d8b) | `git@m.github.com:muchenzhan/optlocal.git` |
+
+推送验收时，`git ls-remote origin refs/heads/main` 返回上述提交号，两边本地与远端
+提交一致，工作树干净。以上是迁移提交号，后续文档提交不改变这两个迁移基线。
 
 ## 路径与维护归属
 
@@ -44,7 +56,7 @@
 - 只使用临时合成数据库验证。没有新建持久 venv，没有重新同步共享环境。
 - 共享 Click/Flask/Playwright 仍被其他工具使用，原依赖声明保留；旧仓库只移除 nnw_archive lint 路径。
 - 核心归档逻辑、Flask 路由、模板和前端资源保持字节不变。
-- 未创建远端内容、未推送、未安装/重启服务。
+- 两个仓库的迁移提交已推送；未安装/重启服务，未切换其他机器。
 
 ## 验证
 
@@ -70,5 +82,5 @@ NNW_ARCHIVE_PYTHON=/opt/local/.venv/bin/python scripts/check.sh
 
 先恢复旧仓库迁出前基线中的入口、受控文件和相应索引，再恢复旧命令调用。
 原始 Git 历史完整保留；无需回滚数据库。保留新仓库和迁移证据供比较。
-新仓库提交与旧仓库迁出提交只在本地完成；推送、其他机器切换和服务重装分别执行。
+本机迁移及两个仓库的 GitHub 推送已完成；其他机器切换和服务重装需另行安排。
 切换其他机器前先准备新 checkout 或安装独立包，避免转发入口找不到项目。

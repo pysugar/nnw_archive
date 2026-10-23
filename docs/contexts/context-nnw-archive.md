@@ -13,6 +13,15 @@
 NetNewsWire 原生 SQLite 数据库，把文章、状态、作者和 feed 元数据合并到独立历史库，
 避免 NetNewsWire 原生保留策略导致多年 feed 记录丢失。
 
+2026-10-24 独立迁移已完成，两个仓库的迁移提交均已推送至各自 `origin/main`：
+
+- 本项目：[`e0e9767`](https://github.com/pysugar/nnw_archive/commit/e0e9767af0290c69e68d44c9886e86423d10237a)，独立维护、运行和验证入口。
+- `/opt/local`：[`e2f67af`](https://github.com/muchenzhan/optlocal/commit/e2f67afd7f0eddfbc133a94d07456f8220d11d8b)，迁出实现并保留本机转发入口。
+
+推送后已核对远端提交号；正式数据、已安装 LaunchAgent 和服务进程未因迁移而改写或重启。
+完整提交号、验收和回滚边界见[迁移记录](../migration/standalone-20261024.md)。
+后续维护从本独立仓库继续；第 8 节保留的是 2026-10-15 历史收束记录。
+
 ## 1. 当前入口
 
 稳定入口：
